@@ -906,15 +906,15 @@ var _Sources = (() => {
     const artist = decode(data.artist ?? "");
     const description = decode(data.description ?? "No description available");
     const arrayTags = [];
-    for (const tag of data.genres.split(",")) {
-      const label = tag;
-      const id = tag.toLowerCase().replace(" ", "-");
+    for (const tag of (data.genres ?? "").split(",")) {
+      const label = tag.trim();
+      const id = tag.trim().toLowerCase().replace(/\s+/g, "-");
       if (!id || !label) continue;
       arrayTags.push({ id, label });
     }
     const tagSections = [App.createTagSection({ id: "0", label: "genres", tags: arrayTags.map((x) => App.createTag(x)) })];
     let status = "ONGOING";
-    switch (data.status.toUpperCase()) {
+    switch ((data.status ?? "").toUpperCase()) {
       case "ONGOING":
         status = "Ongoing";
         break;
@@ -957,127 +957,40 @@ var _Sources = (() => {
     }
     return chapters;
   };
+  var MH_HOME_SECTIONS = [
+    { id: "popular_manga", title: "Popular Manga", mod: "POPULAR", type: import_types.HomeSectionType.singleRowLarge },
+    { id: "latest_update", title: "Latest Updates", mod: "LATEST", type: import_types.HomeSectionType.singleRowNormal },
+    { id: "new_manga", title: "New Manga", mod: "NEW", type: import_types.HomeSectionType.singleRowNormal },
+    { id: "completed_manga", title: "Completed Manga", mod: "COMPLETED", type: import_types.HomeSectionType.singleRowNormal }
+  ];
+  var MH_PAGE_SIZE = 30;
+  var parseMangaList = (rows) => {
+    const collectedIds = [];
+    const results = [];
+    for (const manga of rows ?? []) {
+      const title = manga?.title ?? "";
+      const id = manga?.slug ?? "";
+      if (!id || !title || collectedIds.includes(id)) continue;
+      results.push(App.createPartialSourceManga({
+        image: manga.image ? `${MH_CDN_THUMBS_DOMAIN}/${manga.image}` : "",
+        title: decode(title),
+        mangaId: id
+      }));
+      collectedIds.push(id);
+    }
+    return results;
+  };
   var parseHomeSections = (data, sectionCallback) => {
-    const sections = [
-      {
-        data: data.data.popular.rows,
-        section: App.createHomeSection({
-          id: "popular_manga",
-          title: "Popular Manga",
-          containsMoreItems: true,
-          type: import_types.HomeSectionType.singleRowLarge
-        })
-      },
-      {
-        data: data.data.latest_popular,
-        section: App.createHomeSection({
-          id: "popular_update",
-          title: "Popular Updates",
-          containsMoreItems: false,
-          type: import_types.HomeSectionType.singleRowNormal
-        })
-      },
-      {
-        data: data.data.latest,
-        section: App.createHomeSection({
-          id: "latest_update",
-          title: "Latest Updates",
-          containsMoreItems: true,
-          type: import_types.HomeSectionType.singleRowNormal
-        })
-      },
-      {
-        data: data.data.new.rows,
-        section: App.createHomeSection({
-          id: "new_manga",
-          title: "New Manga",
-          containsMoreItems: true,
-          type: import_types.HomeSectionType.singleRowNormal
-        })
-      },
-      {
-        data: data.data.completed.rows,
-        section: App.createHomeSection({
-          id: "completed_manga",
-          title: "Completed Manga",
-          containsMoreItems: true,
-          type: import_types.HomeSectionType.singleRowNormal
-        })
-      }
-    ];
-    const collectedIds = [];
-    for (const section of sections) {
-      const mangaItemsArray = [];
-      for (const manga of section.data) {
-        const title = manga.title;
-        const id = manga.slug;
-        const image = manga?.image ? `${MH_CDN_THUMBS_DOMAIN}/${manga.image}` : "*";
-        const subtitle = manga?.latestChapter ? "Chapter " + manga.latestChapter : "";
-        if (!id || !title || collectedIds.includes(manga.id)) continue;
-        mangaItemsArray.push(App.createPartialSourceManga({
-          image,
-          title: decode(title),
-          mangaId: id,
-          subtitle
-        }));
-        collectedIds.push(manga.id);
-      }
-      section.section.items = mangaItemsArray;
-      sectionCallback(section.section);
+    for (const info of MH_HOME_SECTIONS) {
+      const section = App.createHomeSection({
+        id: info.id,
+        title: info.title,
+        containsMoreItems: true,
+        type: info.type
+      });
+      section.items = parseMangaList(data.data?.[info.id]?.rows);
+      sectionCallback(section);
     }
-  };
-  var parseViewMore = (homepageSectionId, data) => {
-    const collectedIds = [];
-    let mangaData;
-    switch (homepageSectionId) {
-      case "latest_update":
-        mangaData = data.data.latest.rows;
-        break;
-      case "popular_manga":
-        mangaData = data.data.popular.rows;
-        break;
-      case "new_manga":
-        mangaData = data.data.new.rows;
-        break;
-      case "completed_manga":
-        mangaData = data.data.completed.rows;
-        break;
-    }
-    const moreManga = [];
-    for (const manga of mangaData) {
-      const title = manga.title ?? "";
-      const id = manga.slug ?? "";
-      const image = manga?.image ? `${MH_CDN_THUMBS_DOMAIN}/${manga.image}` : "";
-      const subtitle = manga?.latestChapter ? "Chapter " + manga.latestChapter : "";
-      if (!id || !title || collectedIds.includes(manga.id)) continue;
-      moreManga.push(App.createPartialSourceManga({
-        image,
-        title: decode(title),
-        mangaId: id,
-        subtitle
-      }));
-      collectedIds.push(manga.id);
-    }
-    return moreManga;
-  };
-  var parseSearch = (data) => {
-    const collectedIds = [];
-    const searchResults = [];
-    for (const manga of data.data.search.rows) {
-      const title = manga.title ?? "";
-      const id = manga.slug ?? "";
-      const image = manga?.image ? `${MH_CDN_THUMBS_DOMAIN}/${manga.image}` : "";
-      const subtitle = manga?.latestChapter ? "Chapter " + manga.latestChapter : "";
-      if (!id || !title || collectedIds.includes(manga.id)) continue;
-      searchResults.push(App.createPartialSourceManga({
-        image,
-        title: decode(title),
-        mangaId: id,
-        subtitle
-      }));
-      collectedIds.push(manga.id);
-    }
-    return searchResults;
   };
 
   // src/Mangahub/MangahubCrypto.ts
@@ -1200,8 +1113,14 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MH_CHAPTER_CRYPTO_URL = `${MH_DOMAIN}/api/chapter-crypto`;
+  var MH_API_KEY_ERROR = /rate\s*limit|api\s*key|encryption/i;
+  var generateRandomMhubKey = () => {
+    let key = "";
+    for (let i = 0; i < 32; i++) key += Math.floor(Math.random() * 16).toString(16);
+    return key;
+  };
   var MangahubInfo = {
-    version: "3.2.0",
+    version: "3.3.0",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1225,16 +1144,12 @@ var _Sources = (() => {
         interceptor: {
           interceptRequest: async (request) => {
             const isApiRequest = request.url.startsWith(MH_API_DOMAIN);
-            const mhubAccess = isApiRequest ? await this.getMhubAccess() : "";
             request.headers = {
+              "Referer": `${MH_DOMAIN}/`,
+              "User-Agent": await this.requestManager.getDefaultUserAgent(),
               ...request.headers ?? {},
-              ...{
-                "Referer": `${MH_DOMAIN}/`,
-                "User-Agent": await this.requestManager.getDefaultUserAgent()
-              },
               ...request.url.startsWith(MH_CHAPTER_CRYPTO_URL) ? { "Accept": "application/json" } : {},
-              ...isApiRequest ? { "Origin": `${MH_DOMAIN}` } : {},
-              ...mhubAccess ? { "x-mhub-access": mhubAccess } : {}
+              ...isApiRequest ? { "Origin": `${MH_DOMAIN}` } : {}
             };
             return request;
           },
@@ -1245,6 +1160,11 @@ var _Sources = (() => {
       });
       this.stateManager = App.createSourceStateManager();
       this.chapterCryptoKeys = {};
+      this.chapterPagesCache = {};
+      this.pendingChapters = {};
+      this.pendingKeyRefresh = null;
+      this.mangaCache = {};
+      this.pendingManga = {};
       this.chapterCryptoExpiresAt = 0;
       this.getMhubAccess = async () => {
         const stored = await this.stateManager.retrieve("mhub_key") ?? "";
@@ -1255,17 +1175,34 @@ var _Sources = (() => {
     getMangaShareUrl(mangaId) {
       return `${MH_DOMAIN}/manga/${mangaId}`;
     }
-    async getMangaDetails(mangaId) {
-      const request = App.createRequest({
+    graphqlRequest(query) {
+      return App.createRequest({
         url: MH_API_DOMAIN,
         method: "POST",
         headers: {
           "Accept": "application/json",
           "Content-Type": "application/json"
         },
-        data: {
-          query: `query {
-                    manga(x: m01, slug: "${mangaId}") {
+        data: { query }
+      });
+    }
+    searchQuery(mod, offset, title = "", genre = "all", alias = "search") {
+      return `${alias}: search(x: m01, q: ${JSON.stringify(title)}, genre: ${JSON.stringify(genre)}, mod: ${mod}, offset: ${offset}) {
+                  rows {
+                    title
+                    slug
+                    image
+                  }
+                }`;
+    }
+    // Details and chapters come from the same query, Paperback asks for both when opening a manga
+    async fetchMangaData(mangaId) {
+      const cached = this.mangaCache[mangaId];
+      if (cached && cached.expiresAt > Date.now()) return cached.manga;
+      if (!this.pendingManga[mangaId]) {
+        this.pendingManga[mangaId] = (async () => {
+          const data = await this.fetchGraphQL(this.graphqlRequest(`query {
+                    manga(x: m01, slug: ${JSON.stringify(mangaId)}) {
                         title
                         alternativeTitle
                         author
@@ -1274,59 +1211,52 @@ var _Sources = (() => {
                         status
                         genres
                         description
-                        isPorn
-                        isSoftPorn                    
-                    }
-                 }`
-        }
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      let data;
-      try {
-        data = JSON.parse(response.data);
-      } catch (e) {
-        throw new Error(`${e}`);
-      }
-      if (!data.data?.manga) throw new Error(`Failed to parse manga property from data object mangaId:${mangaId}`);
-      return parseMangaDetails(data.data.manga, mangaId);
-    }
-    async getChapters(mangaId) {
-      const request = App.createRequest({
-        url: MH_API_DOMAIN,
-        method: "POST",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json"
-        },
-        data: {
-          query: `query {
-                    manga(x: m01, slug: "${mangaId}") {
-                        title
                         chapters {
                           number
                           title
-                          slug
                           date
-                        }                  
+                        }
                     }
-                 }`
-        }
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      let data;
-      try {
-        data = JSON.parse(response.data);
-      } catch (e) {
-        throw new Error(`${e}`);
+                 }`), `/manga/${mangaId}`);
+          const manga = data.data?.manga;
+          if (!manga) throw new Error(`Failed to parse manga property from data object mangaId:${mangaId}`);
+          const keys = Object.keys(this.mangaCache);
+          if (keys.length >= 20) delete this.mangaCache[keys[0]];
+          this.mangaCache[mangaId] = { manga, expiresAt: Date.now() + 6e4 };
+          return manga;
+        })().finally(() => {
+          delete this.pendingManga[mangaId];
+        });
       }
-      if (!data.data?.manga) throw new Error(`Failed to parse manga property from data object mangaId:${mangaId}`);
-      if (data.data.manga.chapters?.length == 0) throw new Error(`Failed to parse chapters property from manga object mangaId:${mangaId}`);
-      return parseChapters(data.data.manga.chapters, mangaId);
+      return this.pendingManga[mangaId];
     }
-    async getChapterDetails(mangaId, chapterId, isRetry = false) {
-      if (!await this.getMhubAccess()) {
-        await this.refreshAPIKey();
+    async getMangaDetails(mangaId) {
+      return parseMangaDetails(await this.fetchMangaData(mangaId), mangaId);
+    }
+    async getChapters(mangaId) {
+      const manga = await this.fetchMangaData(mangaId);
+      if (!manga.chapters?.length) throw new Error(`Failed to parse chapters property from manga object mangaId:${mangaId}`);
+      return parseChapters(manga.chapters, mangaId);
+    }
+    async getChapterDetails(mangaId, chapterId) {
+      const cacheKey = `${mangaId}/${chapterId}`;
+      const cached = this.chapterPagesCache[cacheKey];
+      if (cached && cached.expiresAt > Date.now()) {
+        return App.createChapterDetails({ id: chapterId, mangaId, pages: cached.pages.slice() });
       }
+      // Paperback often asks for the same chapter several times in a row, share one request
+      if (!this.pendingChapters[cacheKey]) {
+        this.pendingChapters[cacheKey] = this.loadChapterPages(mangaId, chapterId).finally(() => {
+          delete this.pendingChapters[cacheKey];
+        });
+      }
+      const pages = await this.pendingChapters[cacheKey];
+      const keys = Object.keys(this.chapterPagesCache);
+      if (keys.length >= 20) delete this.chapterPagesCache[keys[0]];
+      this.chapterPagesCache[cacheKey] = { pages, expiresAt: Date.now() + 6e5 };
+      return App.createChapterDetails({ id: chapterId, mangaId, pages: pages.slice() });
+    }
+    async loadChapterPages(mangaId, chapterId) {
       const request = App.createRequest({
         url: MH_API_DOMAIN,
         method: "POST",
@@ -1345,23 +1275,13 @@ var _Sources = (() => {
                   `
         }
       });
-      const response = await this.requestManager.schedule(request, 1);
-      let data;
-      try {
-        data = JSON.parse(response.data);
-      } catch (e) {
-        console.log(`${e}`);
-      }
-      if (!data || data.errors) {
-        await this.refreshAPIKey();
-        if (!isRetry) return this.getChapterDetails(mangaId, chapterId, true);
-        throw new Error("API LIMIT EXCEEDED!\nTry doing the CloudFlare bypass again or come back later!");
-      }
+      const chapterPath = `/chapter/${mangaId}/chapter-${chapterId}`;
+      const data = await this.fetchGraphQL(request, chapterPath, true);
       if (!data.data?.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
       let pagesString = data.data.chapter.pages;
       if (pagesString.startsWith("enc:")) {
         const envelope = parseEncryptedPages(pagesString);
-        pagesString = decryptChapterPages(envelope, await this.getChapterCryptoKey(envelope.keyId));
+        pagesString = decryptChapterPages(envelope, await this.getChapterCryptoKey(envelope.keyId, chapterPath));
       }
       const pages = [];
       try {
@@ -1382,19 +1302,19 @@ var _Sources = (() => {
         throw new Error(`${e}`);
       }
       if (pages.length == 0) throw new Error(`No pages found for mangaId:${mangaId} chapterId:${chapterId}`);
-      return App.createChapterDetails({
-        id: chapterId,
-        mangaId,
-        pages
-      });
+      return pages;
     }
-    async getChapterCryptoKey(keyId, isRetry = false) {
+    async getChapterCryptoKey(keyId, chapterPath, isRetry = false) {
       if (this.chapterCryptoKeys[keyId] && Date.now() < this.chapterCryptoExpiresAt) {
         return this.chapterCryptoKeys[keyId];
       }
       const request = App.createRequest({
         url: MH_CHAPTER_CRYPTO_URL,
-        method: "GET"
+        method: "GET",
+        headers: {
+          "Referer": `${MH_DOMAIN}${chapterPath}`,
+          "x-mhub-access": await this.getMhubAccess()
+        }
       });
       const response = await this.requestManager.schedule(request, 1);
       if (response.status >= 400) {
@@ -1415,249 +1335,75 @@ var _Sources = (() => {
       if (!keys[keyId]) {
         // Key rotated between fetching the chapter and the key, try once more
         this.chapterCryptoExpiresAt = 0;
-        if (!isRetry) return this.getChapterCryptoKey(keyId, true);
+        if (!isRetry) return this.getChapterCryptoKey(keyId, chapterPath, true);
         throw new Error(`MangaHub chapter decryption key not found for keyId: ${keyId}`);
       }
       return keys[keyId];
     }
     async getSearchTags() {
-      const request = App.createRequest({
-        url: MH_API_DOMAIN,
-        method: "POST",
-        headers: {
-          "accept": "application/json",
-          "content-type": "application/json"
-        },
-        data: {
-          query: `query {
+      const tags = [];
+      const seen = {};
+      try {
+        const request = App.createRequest({ url: `${MH_DOMAIN}/search`, method: "GET" });
+        const response = await this.requestManager.schedule(request, 1);
+        const regex = /<a\b[^>]*class="[^"]*\bgenre-label\b[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+        let match;
+        while ((match = regex.exec(response.data ?? "")) !== null) {
+          const href = /href="([^"]*)"/i.exec(match[0])?.[1] ?? "";
+          const id = href.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop();
+          const label = decode(match[1].replace(/<[^>]*>/g, "").trim());
+          if (!id || !label || seen[id]) continue;
+          seen[id] = true;
+          tags.push({ id, label });
+        }
+      } catch (e) {
+        console.log(`Failed to load genres from search page: ${e}`);
+      }
+      if (tags.length == 0) {
+        const data = await this.fetchGraphQL(this.graphqlRequest(`query {
                     genres {
-                      id
                       slug
                       title
                     }
-                }`
+                }`));
+        for (const genre of data.data?.genres ?? []) {
+          if (!genre?.slug || !genre?.title || seen[genre.slug]) continue;
+          seen[genre.slug] = true;
+          tags.push({ id: genre.slug, label: genre.title });
         }
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      let data;
-      try {
-        data = JSON.parse(response.data);
-      } catch (e) {
-        throw new Error(`${e}`);
       }
-      if (data.data.genres?.length == 0) throw new Error("Failed to parse genres property from data object!");
-      const arrayTags = [];
-      for (const genre of data.data.genres) {
-        arrayTags.push({ id: genre.slug, label: genre.title });
-      }
-      return [App.createTagSection({ id: "0", label: "genres", tags: arrayTags.map((x) => App.createTag(x)) })];
+      if (tags.length == 0) throw new Error("Failed to load MangaHub genres!");
+      tags.sort((a, b) => a.label.localeCompare(b.label));
+      return [App.createTagSection({ id: "0", label: "genres", tags: tags.map((x) => App.createTag(x)) })];
     }
     async getHomePageSections(sectionCallback) {
-      const request = App.createRequest({
-        url: MH_API_DOMAIN,
-        method: "POST",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json"
-        },
-        data: {
-          query: `query {
-                    latest_popular: latestPopular(x: m01) {
-                        id
-                        title
-                        slug
-                        image
-                        latestChapter
-                      }
-                      latest: latest(x: m01, limit: 30) {
-                        id
-                        title
-                        slug
-                        image
-                        latestChapter
-                      }
-                      popular: search(x: m01, mod: POPULAR, limit: 30) {
-                        rows {
-                          id
-                          title
-                          slug
-                          image
-                          latestChapter
-                        }
-                      }
-                      new: search(x: m01, mod: NEW, limit: 30) {
-                        rows {
-                          id
-                          title
-                          slug
-                          image
-                          latestChapter
-                        }
-                      }
-                      completed: search(x: m01, mod: COMPLETED, limit: 30) {
-                        rows {
-                          id
-                          title
-                          slug
-                          image
-                          latestChapter
-                    }
-                }
-            }`
-        }
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      try {
-        const data = JSON.parse(response.data);
-        parseHomeSections(data, sectionCallback);
-      } catch (e) {
-        throw new Error(`${e}`);
-      }
+      const data = await this.fetchGraphQL(this.graphqlRequest(`query {
+                ${MH_HOME_SECTIONS.map((x) => this.searchQuery(x.mod, 0, "", "all", x.id)).join("\n")}
+            }`));
+      parseHomeSections(data, sectionCallback);
     }
     async getViewMoreItems(homepageSectionId, metadata) {
+      const section = MH_HOME_SECTIONS.find((x) => x.id === homepageSectionId) ?? MH_HOME_SECTIONS[0];
       const offset = metadata?.offset ?? 0;
-      const request = App.createRequest({
-        url: MH_API_DOMAIN,
-        method: "POST",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json"
-        },
-        data: {
-          query: `query {
-                    latest: search(x: m01, mod: LATEST, offset: ${offset}) {
-                        rows {
-                            id
-                            title
-                            slug
-                            image
-                            latestChapter
-                        }
-                      }
-                      popular: search(x: m01, mod: POPULAR, offset: ${offset}) {
-                        rows {
-                            id
-                            title
-                            slug
-                            image
-                            latestChapter
-                        }
-                      }
-                      new: search(x: m01, mod: NEW, offset: ${offset}) {
-                        rows {
-                            id
-                            title
-                            slug
-                            image
-                            latestChapter
-                        }
-                      }
-                      completed: search(x: m01, mod: COMPLETED, offset: ${offset}) {
-                        rows {
-                            id
-                            title
-                            slug
-                            image
-                            latestChapter
-                    }
-                }
-            }`
-        }
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      let data;
-      try {
-        data = JSON.parse(response.data);
-      } catch (e) {
-        throw new Error(`${e}`);
-      }
-      const manga = parseViewMore(homepageSectionId, data);
-      metadata = { offset: offset + 30 };
+      const data = await this.fetchGraphQL(this.graphqlRequest(`query {
+                ${this.searchQuery(section.mod, offset)}
+            }`));
+      const rows = data.data?.search?.rows ?? [];
       return App.createPagedResults({
-        results: manga,
-        metadata
+        results: parseMangaList(rows),
+        metadata: rows.length >= MH_PAGE_SIZE ? { offset: offset + MH_PAGE_SIZE } : void 0
       });
     }
     async getSearchResults(query, metadata) {
       const offset = metadata?.offset ?? 0;
-      const searchTag = query?.includedTags?.map((x) => x.id) ?? [];
-      const requests = [
-        //No Alt Titles
-        {
-          request: App.createRequest({
-            url: MH_API_DOMAIN,
-            method: "POST",
-            headers: {
-              "Accept": "application/json",
-              "Content-Type": "application/json"
-            },
-            data: {
-              query: `query {
-                            search(x: m01, alt: false, q: ${JSON.stringify(query?.title ?? "")}, genre: ${JSON.stringify(searchTag[0] ?? "")}, offset:${offset}) {
-                              rows {
-                                id
-                                title
-                                slug
-                                image
-                                latestChapter
-                                genres
-                              }
-                            }
-                          }
-                          `
-            }
-          })
-        },
-        {
-          request: App.createRequest({
-            url: MH_API_DOMAIN,
-            method: "POST",
-            headers: {
-              "Accept": "application/json",
-              "Content-Type": "application/json"
-            },
-            data: {
-              query: `query {
-                            search(x: m01, alt: true, q: ${JSON.stringify(query?.title ?? "")}, genre: ${JSON.stringify(searchTag[0] ?? "")}, offset:${offset}) {
-                              rows {
-                                id
-                                title
-                                slug
-                                image
-                                latestChapter
-                                genres
-                              }
-                            }
-                          }
-                          `
-            }
-          })
-        }
-      ];
-      const promises = [];
-      let manga = [];
-      for (const req of requests) {
-        promises.push(this.requestManager.schedule(req.request, 1).then((response) => {
-          let data;
-          try {
-            data = JSON.parse(response.data);
-          } catch (e) {
-            throw new Error(`${e}`);
-          }
-          manga = manga.concat(parseSearch(data));
-        }));
-      }
-      await Promise.all(promises);
-      const seen = /* @__PURE__ */ new Set();
-      manga = manga.filter((x) => {
-        const duplicate = seen.has(x.mangaId);
-        seen.add(x.mangaId);
-        return !duplicate;
-      });
-      metadata = { offset: offset + 30 };
+      const genres = (query?.includedTags ?? []).map((x) => x.id).filter((x) => x);
+      const data = await this.fetchGraphQL(this.graphqlRequest(`query {
+                ${this.searchQuery("POPULAR", offset, query?.title ?? "", genres.length ? genres.join(",") : "all")}
+            }`));
+      const rows = data.data?.search?.rows ?? [];
       return App.createPagedResults({
-        results: manga,
-        metadata
+        results: parseMangaList(rows),
+        metadata: rows.length >= MH_PAGE_SIZE ? { offset: offset + MH_PAGE_SIZE } : void 0
       });
     }
     async getCloudflareBypassRequestAsync() {
@@ -1671,32 +1417,88 @@ var _Sources = (() => {
         }
       });
     }
-    async refreshAPIKey() {
-      await this.stateManager.store("mhub_key", "");
-      const cookieStore = this.requestManager?.cookieStore;
-      cookieStore?.getAllCookies().filter((x) => x.name === "mhub_access").forEach((x) => {
-        cookieStore.removeCookie(x);
-      });
-      const request = App.createRequest({
-        url: `${MH_DOMAIN}/chapter/the-last-human/chapter-1?reloadKey=1`,
-        method: "GET",
-        headers: {
-          "Referer": `${MH_DOMAIN}/`,
-          "User-Agent": await this.requestManager.getDefaultUserAgent()
+    // The website only sends x-mhub-access when loading chapter pages, sending it on every call
+    // (e.g. library updates) burns through the key's rate limit
+    async fetchGraphQL(request, refreshPath, needsKey = false) {
+      if (needsKey && !await this.getMhubAccess()) await this.refreshAPIKey(refreshPath, "");
+      for (let attempt = 0; ; attempt++) {
+        const usedKey = needsKey ? await this.getMhubAccess() : "";
+        request.headers = { ...request.headers ?? {} };
+        if (needsKey) {
+          request.headers["x-mhub-access"] = usedKey;
+        } else {
+          delete request.headers["x-mhub-access"];
         }
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      let mhub_key = "";
-      for (const [key, value] of Object.entries(response.headers ?? {})) {
-        if (key.toLowerCase() !== "set-cookie") continue;
-        const match = /mhub_access=([^;,\s]+)/.exec(String(value));
-        if (match) mhub_key = match[1] ?? "";
+        const response = await this.requestManager.schedule(request, 1);
+        let data;
+        try {
+          data = JSON.parse(response.data);
+        } catch (e) {
+          throw new Error(`MangaHub API returned an invalid response (HTTP ${response.status})!\nTry doing the CloudFlare bypass again!`);
+        }
+        if (!data?.errors?.length) return data;
+        const errorText = data.errors.map((x) => x?.message ?? "").join(" ");
+        const isKeyError = MH_API_KEY_ERROR.test(errorText);
+        if (!isKeyError) throw new Error(`MangaHub API error: ${errorText || "unknown error"}`);
+        if (!needsKey || attempt >= 2) {
+          throw new Error("API LIMIT EXCEEDED!\nWait a minute and try again, or do the CloudFlare bypass again!");
+        }
+        if (attempt == 0) {
+          await this.refreshAPIKey(refreshPath, usedKey);
+        } else {
+          await this.stateManager.store("mhub_key", generateRandomMhubKey());
+        }
       }
-      if (!mhub_key) {
-        mhub_key = cookieStore?.getAllCookies().find((x) => x.name === "mhub_access")?.value ?? "";
+    }
+    // Only one refresh at a time, concurrent callers wait for it instead of invalidating each other's key
+    async refreshAPIKey(refreshPath, oldKey) {
+      if (oldKey !== void 0 && await this.getMhubAccess() !== oldKey) return;
+      if (!this.pendingKeyRefresh) {
+        this.pendingKeyRefresh = this.requestNewAPIKey(refreshPath, oldKey ?? await this.getMhubAccess()).finally(() => {
+          this.pendingKeyRefresh = null;
+        });
       }
-      await this.stateManager.store("mhub_key", mhub_key);
-      return mhub_key;
+      return this.pendingKeyRefresh;
+    }
+    async requestNewAPIKey(refreshPath, oldKey) {
+      const cookieStore = this.requestManager?.cookieStore;
+      const path = refreshPath ?? "/chapter/the-last-human/chapter-1";
+      for (const query of ["?reloadKey=1", ""]) {
+        cookieStore?.getAllCookies().filter((x) => x.name === "mhub_access").forEach((x) => {
+          cookieStore.removeCookie(x);
+        });
+        const request = App.createRequest({
+          url: `${MH_DOMAIN}${path}${query}`,
+          method: "GET",
+          headers: {
+            "Referer": `${MH_DOMAIN}/`,
+            "User-Agent": await this.requestManager.getDefaultUserAgent()
+          }
+        });
+        let response;
+        try {
+          response = await this.requestManager.schedule(request, 1);
+        } catch (e) {
+          continue;
+        }
+        let mhub_key = "";
+        for (const [key, value] of Object.entries(response.headers ?? {})) {
+          if (key.toLowerCase() !== "set-cookie") continue;
+          const match = /mhub_access=([^;,\s]+)/.exec(String(value));
+          if (match) mhub_key = match[1] ?? "";
+        }
+        if (!mhub_key) {
+          mhub_key = cookieStore?.getAllCookies().find((x) => x.name === "mhub_access")?.value ?? "";
+        }
+        if (mhub_key && mhub_key !== oldKey) {
+          await this.stateManager.store("mhub_key", mhub_key);
+          return mhub_key;
+        }
+      }
+      // The site didn't hand out a new key, MangaHub also accepts a random one
+      const randomKey = generateRandomMhubKey();
+      await this.stateManager.store("mhub_key", randomKey);
+      return randomKey;
     }
   };
   return __toCommonJS(Mangahub_exports);
