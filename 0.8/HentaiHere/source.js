@@ -906,27 +906,77 @@ var _Sources = (() => {
   }
 
   // src/HentaiHere/HentaiHereParser.ts
+  var getTagId = (href) => {
+    const match = href.match(/hentaihere\.com\/((?:category|content)\/\d+-[^/?#]+)/) ?? href.match(/^\/((?:category|content)\/\d+-[^/?#]+)/);
+    return match?.[1] ?? "";
+  };
+  var parseDate = (date) => {
+    date = date.toUpperCase().trim();
+    let time;
+    const number = Number((/\d*/.exec(date) ?? [])[0]);
+    if (date.includes("LESS THAN AN HOUR") || date.includes("JUST NOW")) {
+      time = /* @__PURE__ */ new Date(Date.now());
+    } else if (date.includes("YEAR") || date.includes("YEARS")) {
+      time = new Date(Date.now() - number * 31556952e3);
+    } else if (date.includes("MONTH") || date.includes("MONTHS")) {
+      time = new Date(Date.now() - number * 2592e6);
+    } else if (date.includes("WEEK") || date.includes("WEEKS")) {
+      time = new Date(Date.now() - number * 6048e5);
+    } else if (date.includes("YESTERDAY")) {
+      time = new Date(Date.now() - 864e5);
+    } else if (date.includes("DAY") || date.includes("DAYS")) {
+      time = new Date(Date.now() - number * 864e5);
+    } else if (date.includes("HOUR") || date.includes("HOURS")) {
+      time = new Date(Date.now() - number * 36e5);
+    } else if (date.includes("MINUTE") || date.includes("MINUTES")) {
+      time = new Date(Date.now() - number * 6e4);
+    } else if (date.includes("SECOND") || date.includes("SECONDS")) {
+      time = new Date(Date.now() - number * 1e3);
+    } else {
+      time = new Date(date);
+    }
+    return isNaN(time.getTime()) ? /* @__PURE__ */ new Date() : time;
+  };
   var parseMangaDetails = ($2, mangaId) => {
     const titles = [];
-    titles.push(decode($2("h4 > a").children().remove().end().text().trim() ?? ""));
-    const image = $2("img", "div#cover").attr("src") ?? "";
-    const artist = $2("span:contains(Artist:)").next().text().trim();
-    const description = decode($2("span:contains(Brief Summary:)").parent().text().replace($2("span:contains(Brief Summary:)").text(), "").trim());
-    const arrayTags = [];
-    for (const tag of $2("a.tagbutton", $2("span:contains(Content:)").parent()).toArray()) {
-      const label = $2(tag).text().trim();
-      const id = $2(tag).attr("href")?.split("/").pop()?.trim() ?? "";
-      if (!id || !label || label == "-") continue;
-      arrayTags.push({ id, label });
+    const mainTitle = $2("h1#book-title").first().text().trim();
+    if (mainTitle) titles.push(decode(mainTitle));
+    for (const script of $2('script[type="application/ld+json"]').toArray()) {
+      try {
+        let json = JSON.parse($2(script).text());
+        if (Array.isArray(json)) json = json[0];
+        if (!json?.name || !Array.isArray(json?.alternateName)) continue;
+        if (!titles.length) titles.push(decode(String(json.name).trim()));
+        for (const alt of json.alternateName) {
+          const altTitle = decode(String(alt).trim());
+          if (altTitle && !titles.includes(altTitle)) titles.push(altTitle);
+        }
+        break;
+      } catch (e) {
+        continue;
+      }
     }
-    for (const tag of $2("a.tagbutton", $2("span:contains(Catergory:)").parent()).toArray()) {
+    const image = $2("img", "[data-book-cover]").first().attr("src") ?? $2('meta[property="og:image"]').attr("content") ?? "";
+    const getInfo = (label) => {
+      for (const row of $2("dl > div", 'section[aria-labelledby="book-title"]').toArray()) {
+        if ($2("dt", row).first().text().trim().toLowerCase() != label.toLowerCase()) continue;
+        return $2("dd", row).first();
+      }
+      return null;
+    };
+    const artistNode = getInfo("Artist");
+    const artists = artistNode ? $2("a", artistNode).toArray().map((x) => $2(x).text().trim()).filter((x) => x && x != "-") : [];
+    const artist = artists.length ? artists.join(", ") : artistNode?.text().trim() ?? "";
+    const description = decode($2('meta[property="og:description"]').attr("content")?.trim() ?? $2('meta[name="description"]').attr("content")?.trim() ?? "");
+    const arrayTags = [];
+    for (const tag of $2("a.chip", 'section[aria-labelledby="book-title"]').toArray()) {
       const label = $2(tag).text().trim();
-      const id = $2(tag).attr("href")?.split("/").pop()?.trim() ?? "";
-      if (!id || !label || label == "-") continue;
+      const id = getTagId($2(tag).attr("href") ?? "");
+      if (!id || !label || label == "-" || arrayTags.some((x) => x.id == id)) continue;
       arrayTags.push({ id, label });
     }
     const tagSections = [App.createTagSection({ id: "0", label: "genres", tags: arrayTags.map((x) => App.createTag(x)) })];
-    const rawStatus = $2("span:contains(Status:)").next().text().trim();
+    const rawStatus = getInfo("Status")?.text().trim() ?? "";
     let status = "ONGOING";
     switch (rawStatus.toUpperCase()) {
       case "ONGOING":
@@ -954,15 +1004,22 @@ var _Sources = (() => {
   };
   var parseChapters = ($2) => {
     const chapters = [];
-    for (const chapter of $2("li.sub-chp", "ul.arf-list").toArray()) {
-      const title = decode($2("span.pull-left", chapter).text().replace($2("span.pull-left i.text-muted", chapter).text(), "").trim());
-      const chapterIdRaw = $2("a", chapter).attr("href") ?? "";
-      const chapterIdRegex = chapterIdRaw?.match(/m\/[A-z0-9]+\/(\d+)/);
-      let chapterId = null;
-      if (chapterIdRegex && chapterIdRegex[1]) chapterId = chapterIdRegex[1];
-      if (!chapterId) continue;
-      const date = /* @__PURE__ */ new Date();
-      const chapterNumber = isNaN(Number(chapterId)) ? 0 : Number(chapterId);
+    const options = $2("option", "select#preview-chapter").toArray();
+    for (const [index, option] of options.entries()) {
+      const chapterId = $2(option).attr("value")?.trim() ?? "";
+      if (!chapterId || isNaN(Number(chapterId))) continue;
+      const listItem = $2(`li#chapter-${chapterId}`, "section#chapters");
+      let title = decode($2(option).text().trim());
+      let chapterNumber = options.length - index;
+      let date = parseDate($2(option).attr("data-added") ?? "");
+      if (listItem.length) {
+        const listTitle = $2('a[href*="/reader/"]', listItem).first().text().trim();
+        if (listTitle) title = decode(listTitle);
+        const listNumber = Number($2("span.w-10", listItem).first().text().trim());
+        if (!isNaN(listNumber) && listNumber > 0) chapterNumber = listNumber;
+        const listDate = $2("span.text-xs.text-tone", listItem).last().text().trim();
+        if (listDate) date = parseDate(listDate);
+      }
       chapters.push(App.createChapter({
         id: chapterId,
         name: title,
@@ -971,15 +1028,29 @@ var _Sources = (() => {
         time: date
       }));
     }
+    if (chapters.length == 0) {
+      const href = $2('a[href*="/reader/"]', "[data-book-buttons]").first().attr("href") ?? "";
+      const chapterId = href.match(/\/reader\/[^/]+\/(\d+)/)?.[1];
+      if (chapterId) {
+        chapters.push(App.createChapter({
+          id: chapterId,
+          name: "Chapter 1",
+          langCode: "\u{1F1EC}\u{1F1E7}",
+          chapNum: 1,
+          time: /* @__PURE__ */ new Date()
+        }));
+      }
+    }
     return chapters;
   };
   var parseChapterDetails = (data2, mangaId, chapterId) => {
     const pages = [];
-    let obj = /var rff_imageList = (.*);/.exec(data2)?.[1] ?? "";
+    const $2 = load(data2);
+    let obj = $2("script[data-reader-data]").first().text().trim();
     if (obj == "") throw new Error("Unable to parse chapter details!");
     obj = JSON.parse(obj);
-    for (const i of obj) {
-      const page = "https://hentaicdn.com/hentai" + i;
+    for (const i of obj?.images ?? []) {
+      const page = String(i).startsWith("http") ? String(i) : "https://hermes.hentai.direct/hentai" + i;
       pages.push(page);
     }
     const chapterDetails = App.createChapterDetails({
@@ -989,132 +1060,49 @@ var _Sources = (() => {
     });
     return chapterDetails;
   };
-  var parseHomeSections = ($2, sectionCallback) => {
-    const staffSection = App.createHomeSection({
-      id: "staff_pick",
-      title: "Staff Picks",
-      containsMoreItems: true,
-      type: import_types.HomeSectionType.singleRowLarge
-    });
-    const newestSection = App.createHomeSection({
-      id: "newest",
-      title: "Recently Added",
-      containsMoreItems: true,
-      type: import_types.HomeSectionType.singleRowNormal
-    });
-    const trendingSection = App.createHomeSection({
-      id: "trending",
-      title: "Trending",
-      containsMoreItems: true,
-      type: import_types.HomeSectionType.singleRowNormal
-    });
-    const staffSection_Array = [];
-    for (const manga of $2("div.item", "div#staffpick").toArray()) {
-      const image = $2("img", manga).attr("src") ?? "";
-      const title = $2("img", manga).attr("alt")?.trim() ?? "";
-      const id = $2("a", manga).attr("href")?.split("/").pop()?.trim();
-      const subtitle = $2("b.text-danger", manga).text().trim();
-      if (!id || !title) continue;
-      staffSection_Array.push(App.createPartialSourceManga({
-        image,
-        title: decode(title),
-        mangaId: id,
-        subtitle
-      }));
-    }
-    staffSection.items = staffSection_Array;
-    sectionCallback(staffSection);
-    const newestSection_Array = [];
-    for (const manga of $2($2("div.row.row-sm")[1]).children("div").toArray()) {
-      const image = $2("img", manga).attr("src") ?? "";
-      const title = $2("img", manga).attr("alt")?.trim() ?? "";
-      const id = $2("a", manga).attr("href")?.split("/").pop()?.trim();
-      const subtitle = $2("span.label.label-danger", manga).text().trim();
-      if (!id || !title) continue;
-      newestSection_Array.push(App.createPartialSourceManga({
-        image,
-        title: decode(title),
-        mangaId: id,
-        subtitle
-      }));
-    }
-    newestSection.items = newestSection_Array;
-    sectionCallback(newestSection);
-    const trendingSection_Array = [];
-    for (const manga of $2($2("div.row.row-sm")[1]).children("div").toArray()) {
-      const image = $2("img", manga).attr("src") ?? "";
-      const title = $2("img", manga).attr("alt")?.trim() ?? "";
-      const id = $2("a", manga).attr("href")?.split("/").pop()?.trim();
-      if (!id || !title) continue;
-      trendingSection_Array.push(App.createPartialSourceManga({
-        image,
-        title: decode(title),
-        mangaId: id,
-        subtitle: void 0
-      }));
-    }
-    trendingSection.items = trendingSection_Array;
-    sectionCallback(trendingSection);
-  };
-  var parseViewMore = ($2) => {
+  var parseMangaCards = ($2) => {
     const manga = [];
     const collectedIds = [];
-    for (const obj of $2("div.item", "div.row.row-sm").toArray()) {
-      const image = $2("img", obj).attr("src") ?? "";
-      const id = $2("a", obj).attr("href")?.split("/").pop()?.trim();
-      const title = $2("img", obj).attr("alt")?.trim();
-      const subtitle = $2("b.text-danger", obj).text();
-      if (!id || !title || collectedIds.includes(id)) continue;
+    for (const obj of $2("article.card[data-book]").toArray()) {
+      const bookId = $2(obj).attr("data-book")?.trim();
+      const image = $2("img", obj).first().attr("src") ?? "";
+      const title = $2("h3", obj).first().text().trim() || $2("img", obj).first().attr("alt")?.trim() || "";
+      const subtitle = $2(".card-badge", obj).first().text().trim();
+      if (!bookId || isNaN(Number(bookId)) || !title) continue;
+      const id = `S${bookId}`;
+      if (collectedIds.includes(id)) continue;
       manga.push(App.createPartialSourceManga({
         image,
         title: decode(title),
         mangaId: id,
-        subtitle
+        subtitle: subtitle ? subtitle : void 0
       }));
       collectedIds.push(id);
     }
     return manga;
   };
+  var parseHomeSection = ($2, section, sectionCallback) => {
+    section.items = parseMangaCards($2);
+    sectionCallback(section);
+  };
+  var parseViewMore = ($2) => {
+    return parseMangaCards($2);
+  };
   var parseTags = ($2) => {
     const arrayTags = [];
-    for (const tag of $2("div.list-group.item", "div.col-xs-12").toArray()) {
-      const label = $2("span.clear > a", tag).text().trim();
-      const id = $2("span.clear > a", tag).attr("href")?.split("/").pop()?.trim() ?? "";
-      if (!id || !label) continue;
+    for (const tag of $2("a", "main").toArray()) {
+      const id = getTagId($2(tag).attr("href") ?? "");
+      const label = $2("span", tag).first().text().trim();
+      if (!id || !label || arrayTags.some((x) => x.id == id)) continue;
       arrayTags.push({ id, label });
     }
-    const tagSections = [App.createTagSection({ id: "0", label: "genres", tags: arrayTags.map((x) => App.createTag(x)) })];
-    return tagSections;
+    return arrayTags;
   };
   var parseSearch = ($2) => {
-    const mangas = [];
-    for (const obj of $2("div.item", "div.row.row-sm").toArray()) {
-      const id = $2("a", obj).attr("href")?.split("/").pop()?.trim();
-      const image = $2("img", obj).attr("src") ?? "";
-      const title = decode(String($2("img", obj).attr("alt")?.trim()));
-      const subtitle = $2("b.text-danger", obj).text().trim();
-      if (!id || !title) continue;
-      mangas.push(App.createPartialSourceManga({
-        image,
-        title: decode(title),
-        mangaId: id,
-        subtitle
-      }));
-    }
-    return mangas;
+    return parseMangaCards($2);
   };
   var isLastPage = ($2) => {
-    let isLast = false;
-    const pages = [];
-    for (const page of $2("li", "ul.pagination").toArray()) {
-      const p = Number($2(page).text().trim());
-      if (isNaN(p)) continue;
-      pages.push(p);
-    }
-    const lastPage = Math.max(...pages);
-    const currentPage = Number($2("li.active").text().trim());
-    if (currentPage >= lastPage) isLast = true;
-    return isLast;
+    return $2("a[rel=next]").length == 0;
   };
 
   // node_modules/cheerio/dist/browser/static.js
@@ -15709,7 +15697,7 @@ var _Sources = (() => {
   // src/HentaiHere/HentaiHere.ts
   var HH_DOMAIN = "https://hentaihere.com";
   var HentaiHereInfo = {
-    version: "3.0.2",
+    version: "3.0.3",
     name: "HentaiHere",
     icon: "icon.png",
     author: "Netsky",
@@ -15771,42 +15759,93 @@ var _Sources = (() => {
       return parseChapters($2);
     }
     async getChapterDetails(mangaId, chapterId) {
+      const bookId = mangaId.replace(/^S/, "");
       const request = App.createRequest({
-        url: `${HH_DOMAIN}/m/${mangaId}/${chapterId}/1`,
+        url: `${HH_DOMAIN}/reader/${bookId}/${chapterId}/page-1`,
         method: "GET"
       });
-      const response = await this.requestManager.schedule(request, 1);
+      let response = await this.requestManager.schedule(request, 1);
       this.CloudFlareError(response.status);
+      if (response.status == 404 || !String(response.data ?? "").includes("data-reader-data")) {
+        const legacyRequest = App.createRequest({
+          url: `${HH_DOMAIN}/m/${mangaId}/${chapterId}/1`,
+          method: "GET"
+        });
+        response = await this.requestManager.schedule(legacyRequest, 1);
+        this.CloudFlareError(response.status);
+      }
       return parseChapterDetails(response.data, mangaId, chapterId);
     }
     async getHomePageSections(sectionCallback) {
-      const request = App.createRequest({
-        url: HH_DOMAIN,
-        method: "GET"
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      this.CloudFlareError(response.status);
-      const $2 = load(response.data);
-      parseHomeSections($2, sectionCallback);
+      const sections = [
+        {
+          request: App.createRequest({
+            url: `${HH_DOMAIN}/browse/staff-picks`,
+            method: "GET"
+          }),
+          section: App.createHomeSection({
+            id: "staff_pick",
+            title: "Staff Picks",
+            containsMoreItems: true,
+            type: import_types3.HomeSectionType.singleRowLarge
+          })
+        },
+        {
+          request: App.createRequest({
+            url: `${HH_DOMAIN}/browse/newest`,
+            method: "GET"
+          }),
+          section: App.createHomeSection({
+            id: "newest",
+            title: "Recently Added",
+            containsMoreItems: true,
+            type: import_types3.HomeSectionType.singleRowNormal
+          })
+        },
+        {
+          request: App.createRequest({
+            url: `${HH_DOMAIN}/browse/trending`,
+            method: "GET"
+          }),
+          section: App.createHomeSection({
+            id: "trending",
+            title: "Trending",
+            containsMoreItems: true,
+            type: import_types3.HomeSectionType.singleRowNormal
+          })
+        }
+      ];
+      const promises = [];
+      for (const section of sections) {
+        sectionCallback(section.section);
+        promises.push(
+          this.requestManager.schedule(section.request, 1).then((response) => {
+            this.CloudFlareError(response.status);
+            const $2 = load(response.data);
+            parseHomeSection($2, section.section, sectionCallback);
+          })
+        );
+      }
+      await Promise.all(promises);
     }
     async getViewMoreItems(homepageSectionId, metadata) {
       const page = metadata?.page ?? 1;
       let param = "";
       switch (homepageSectionId) {
         case "newest":
-          param = `directory/newest?page=${page}`;
+          param = "browse/newest";
           break;
         case "trending":
-          param = `directory/trending?page=${page}`;
+          param = "browse/trending";
           break;
         case "staff_pick":
-          param = `directory/staff_pick?page=${page}`;
+          param = "browse/staff-picks";
           break;
         default:
           throw new Error("Requested to getViewMoreItems for a section ID which doesn't exist");
       }
       const request = App.createRequest({
-        url: `${HH_DOMAIN}/${param}`,
+        url: `${HH_DOMAIN}/${param}${page > 1 ? `/page-${page}` : ""}`,
         method: "GET"
       });
       const response = await this.requestManager.schedule(request, 1);
@@ -15820,29 +15859,51 @@ var _Sources = (() => {
       });
     }
     async getSearchTags() {
-      const request = App.createRequest({
+      const categoryTags = [];
+      const contentTags = [];
+      const categoryRequest = App.createRequest({
         url: `${HH_DOMAIN}/tags/category`,
         method: "GET"
       });
-      const response = await this.requestManager.schedule(request, 1);
-      const $2 = load(response.data);
-      return parseTags($2);
+      const categoryResponse = await this.requestManager.schedule(categoryRequest, 1);
+      this.CloudFlareError(categoryResponse.status);
+      categoryTags.push(...parseTags(load(categoryResponse.data)));
+      for (let page = 1; page <= 10; page++) {
+        const contentRequest = App.createRequest({
+          url: `${HH_DOMAIN}/tags/content${page > 1 ? `/page-${page}` : ""}`,
+          method: "GET"
+        });
+        const contentResponse = await this.requestManager.schedule(contentRequest, 1);
+        this.CloudFlareError(contentResponse.status);
+        const $2 = load(contentResponse.data);
+        const tags = parseTags($2).filter((x) => !contentTags.some((y) => y.id == x.id));
+        contentTags.push(...tags);
+        if (tags.length == 0 || isLastPage($2)) break;
+      }
+      return [
+        App.createTagSection({ id: "0", label: "genres", tags: categoryTags.map((x) => App.createTag(x)) }),
+        App.createTagSection({ id: "1", label: "content", tags: contentTags.map((x) => App.createTag(x)) })
+      ];
     }
     async getSearchResults(query, metadata) {
       const page = metadata?.page ?? 1;
       let request;
+      const tagId = query?.includedTags?.map((x) => x.id)[0];
       if (query.title) {
         request = App.createRequest({
-          url: `${HH_DOMAIN}/search?s=${encodeURI(query.title)}&page=${page}`,
+          url: `${HH_DOMAIN}/search?q=${encodeURIComponent(query.title)}&page=${page}`,
+          method: "GET"
+        });
+      } else if (tagId) {
+        request = App.createRequest({
+          url: `${HH_DOMAIN}/${tagId}${page > 1 ? `/page-${page}` : ""}`,
           method: "GET"
         });
       } else {
-        request = App.createRequest({
-          url: `${HH_DOMAIN}/search/${query?.includedTags?.map((x) => x.id)[0]}/most-popular?page=${page}`,
-          method: "GET"
-        });
+        return App.createPagedResults({ results: [], metadata: void 0 });
       }
       const response = await this.requestManager.schedule(request, 1);
+      this.CloudFlareError(response.status);
       const $2 = load(response.data);
       const manga = parseSearch($2);
       metadata = !isLastPage($2) ? { page: page + 1 } : void 0;

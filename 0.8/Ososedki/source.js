@@ -15492,22 +15492,31 @@ var _Sources = (() => {
   }
 
   // src/Ososedki/OsosedkiParser.ts
+  var absoluteUrl = (url, OS_DOMAIN2 = "https://ososedki.com") => {
+    if (!url) return "";
+    if (url.startsWith("//")) return "https:" + url;
+    if (url.startsWith("http")) return url;
+    return OS_DOMAIN2 + (url.startsWith("/") ? "" : "/") + url;
+  };
   var parseMangaDetails = ($2, mangaId) => {
-    const images = $2("div.thumbs", "div.container-fluid");
-    const titleString = $2("img", images.first()).attr("alt")?.trim() ?? "";
-    const split = titleString.split(" - ");
-    const title = split.slice(0, -1).join(" - ") || titleString;
-    const description = `Gallery: ${title}
-
-Images: ${images.length - 1}`;
-    const image = $2("img", images.first()).attr("src") ?? "";
+    const title = $2("h1", "div.container-fluid.bg-primary").first().text().trim() || $2('meta[property="og:title"]').attr("content")?.trim() || mangaId;
+    const photos = $2("figure.photo-item");
+    const info = $2("p.text-white-50", "div.container-fluid.bg-primary").first().text().trim();
+    const extra = [];
+    for (const btn of $2("a.btn", "div.album-info").toArray()) {
+      const text = $2(btn).text().trim();
+      if (text) extra.push(text);
+    }
+    const description = `${info ? info + "\n\n" : ""}${extra.length ? extra.join(", ") + "\n\n" : ""}Images: ${photos.length}`;
+    const firstPhoto = $2("img", photos.first());
+    const image = absoluteUrl($2('meta[property="og:image"]').attr("content") ?? firstPhoto.attr("data-src") ?? "");
     return App.createSourceManga({
       id: mangaId,
       mangaInfo: App.createMangaInfo({
-        titles: [title],
+        titles: [decode(title)],
         status: "Completed",
         image,
-        desc: description
+        desc: decode(description)
       })
     });
   };
@@ -15521,11 +15530,12 @@ Images: ${images.length - 1}`;
   };
   var parseChapterDetails = ($2, mangaId, chapterId) => {
     const pages = [];
-    for (const img of $2("div.thumbs", "div.container-fluid").toArray().slice(0, -1)) {
-      let image = $2("img", img).attr("src") ?? "";
-      if (!image) image = $2(img).attr("data-src") ?? "";
-      if (!image) continue;
-      pages.push(image);
+    for (const item of $2("figure.photo-item").toArray()) {
+      let image = $2("a", item).first().attr("href") ?? "";
+      if (!image || !/\.(jpe?g|png|webp|gif)/i.test(image)) image = $2("img", item).attr("data-src") ?? "";
+      if (!image || image.startsWith("data:")) image = $2("img", item).attr("src") ?? "";
+      if (!image || image.startsWith("data:")) continue;
+      pages.push(absoluteUrl(image));
     }
     const chapterDetails = App.createChapterDetails({
       id: chapterId,
@@ -15537,74 +15547,47 @@ Images: ${images.length - 1}`;
   var parseHomeSections = ($2, OS_DOMAIN2, sectionID) => {
     const collectedIds = [];
     const itemArray = [];
-    switch (sectionID) {
-      case "random":
-        for (const item of $2("div.thumbs-more", "div.grid-more").toArray()) {
-          const id = $2("a", item).attr("href")?.split("/").pop();
-          const image = OS_DOMAIN2 + $2("img", item).first().attr("src");
-          const title = $2("a,text-white.text-decoration-none", item).text().trim();
-          const subtitle = $2("i.bi.bi-images", item).parent().text().trim() + " images";
-          if (!id || !title || collectedIds.includes(id)) continue;
-          itemArray.push(App.createPartialSourceManga({
-            image,
-            title: decode(title),
-            mangaId: id,
-            subtitle: decode(subtitle)
-          }));
-          collectedIds.push(id);
-        }
-        break;
-      case "cosplay":
-        for (const item of $2("div.thumbs", "div.container-fluid").toArray()) {
-          const id = $2("a", item).attr("href")?.split("/").pop();
-          const image = OS_DOMAIN2 + $2("img", item).first().attr("src");
-          const title = $2("a,text-white.text-decoration-none", item).text().trim();
-          const subtitle = $2("span.badge.bg-dark", item).first().text().trim();
-          if (!id || !title || collectedIds.includes(id)) continue;
-          itemArray.push(App.createPartialSourceManga({
-            image,
-            title: decode(title),
-            mangaId: id,
-            subtitle: decode(subtitle)
-          }));
-          collectedIds.push(id);
-        }
-        break;
-      default:
-        for (const item of $2("div.thumbs", "div.container-fluid").toArray()) {
-          const id = $2("a", item).attr("href")?.split("/").pop();
-          const image = OS_DOMAIN2 + $2("img", item).first().attr("src");
-          const title = $2("a,text-white.text-decoration-none", item).text().trim();
-          const subtitle = $2("i.bi.bi-images", item).parent().text().trim() + " images";
-          if (!id || !title || collectedIds.includes(id)) continue;
-          itemArray.push(App.createPartialSourceManga({
-            image,
-            title: decode(title),
-            mangaId: id,
-            subtitle: decode(subtitle)
-          }));
-          collectedIds.push(id);
-        }
-        break;
+    for (const item of $2("article.gallery-item").toArray()) {
+      if ($2(item).hasClass("banner-item")) continue;
+      const href = $2("a.gallery-link", item).attr("href") ?? $2("a", item).first().attr("href") ?? "";
+      if (!href.includes("/photos/")) continue;
+      const id = href.split("?")[0].split("/").pop();
+      const image = absoluteUrl($2("img", item).first().attr("src") ?? $2("img", item).first().attr("data-src") ?? "", OS_DOMAIN2);
+      const title = $2("h3", item).first().text().trim() || $2("img", item).first().attr("alt")?.trim() || "";
+      const count = $2("span.badge.bg-dark", item).first().text().trim();
+      const subtitle = count ? `${count} images` : $2("span.badge", item).first().text().trim();
+      if (!id || !title || collectedIds.includes(id)) continue;
+      itemArray.push(App.createPartialSourceManga({
+        image,
+        title: decode(title),
+        mangaId: id,
+        subtitle: decode(subtitle)
+      }));
+      collectedIds.push(id);
     }
     return itemArray;
   };
   var parseTags = ($2) => {
     const arrayTags = [];
-    for (const tag of $2("li", $2("li.nav-item.dropdown").first()).toArray()) {
+    for (const tag of $2("a.dropdown-item", $2("li.nav-item.dropdown").first()).toArray()) {
       const label = $2(tag).text().trim() ?? "";
-      const id = encodeURI($2("a", tag).attr("href")?.split("/").pop()?.trim() ?? "");
+      const href = $2(tag).attr("href") ?? "";
+      if (!href.includes("/category/")) continue;
+      const id = encodeURI(href.split("?")[0].split("/").pop()?.trim() ?? "");
       if (!id || !label) continue;
       arrayTags.push({ id, label });
     }
     const tagSections = [App.createTagSection({ id: "0", label: "genres", tags: arrayTags.map((x) => App.createTag(x)) })];
     return tagSections;
   };
+  var isLastPage = ($2) => {
+    return $2("a.next-page").length == 0;
+  };
 
   // src/Ososedki/Ososedki.ts
   var OS_DOMAIN = "https://ososedki.com";
   var OsosedkiInfo = {
-    version: "1.0.3",
+    version: "1.0.4",
     name: "Ososedki",
     icon: "icon.png",
     author: "Netsky",
@@ -15643,7 +15626,7 @@ Images: ${images.length - 1}`;
       });
     }
     getMangaShareUrl(mangaId) {
-      return `${OS_DOMAIN}/${mangaId}`;
+      return `${OS_DOMAIN}/photos/${mangaId}`;
     }
     async getMangaDetails(mangaId) {
       const request = App.createRequest({
@@ -15732,7 +15715,7 @@ Images: ${images.length - 1}`;
       this.CloudFlareError(response.status);
       const $2 = load(response.data);
       const manga = parseHomeSections($2, OS_DOMAIN, homepageSectionId);
-      metadata = { page: page + 1 };
+      metadata = manga.length == 0 || homepageSectionId == "new" && isLastPage($2) ? void 0 : { page: page + 1 };
       return App.createPagedResults({
         results: manga,
         metadata
@@ -15744,28 +15727,34 @@ Images: ${images.length - 1}`;
         method: "GET"
       });
       const response = await this.requestManager.schedule(request, 1);
+      this.CloudFlareError(response.status);
       const $2 = load(response.data);
       return parseTags($2);
     }
     async getSearchResults(query, metadata) {
       const page = metadata?.page ?? 1;
       let request;
-      if (query.title) {
+      if (query?.title) {
         request = App.createRequest({
-          url: `${OS_DOMAIN}/?page=${page}`,
-          // Site does not support title search
+          url: `${OS_DOMAIN}/search?q=${encodeURIComponent(query.title.trim())}&page=${page}`,
+          method: "GET"
+        });
+      } else if (query?.includedTags?.length) {
+        request = App.createRequest({
+          url: `${OS_DOMAIN}/category/${query.includedTags.map((x) => x.id)[0]}?page=${page}`,
           method: "GET"
         });
       } else {
         request = App.createRequest({
-          url: `${OS_DOMAIN}/category/${query?.includedTags?.map((x) => x.id)[0]}?page=${page}`,
+          url: `${OS_DOMAIN}/?page=${page}`,
           method: "GET"
         });
       }
       const response = await this.requestManager.schedule(request, 1);
+      this.CloudFlareError(response.status);
       const $2 = load(response.data);
       const manga = parseHomeSections($2, OS_DOMAIN, "");
-      metadata = { page: page + 1 };
+      metadata = manga.length == 0 || isLastPage($2) ? void 0 : { page: page + 1 };
       return App.createPagedResults({
         results: manga,
         metadata

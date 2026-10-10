@@ -15682,10 +15682,11 @@ var _Sources = (() => {
   };
   var parseTags = ($2) => {
     const arrayTags = [];
-    for (const tag of $2(".genre-select-i > label").toArray()) {
-      const title = $2(tag).attr("for") ?? "";
-      if (!title) continue;
-      arrayTags.push({ id: title, label: title });
+    for (const tag of $2('.chip[data-group="include_genres"]').toArray()) {
+      const id = $2(tag).attr("data-value")?.trim() ?? "";
+      const label = $2(tag).text().trim() || id;
+      if (!id) continue;
+      arrayTags.push({ id, label });
     }
     const tagSections = [App.createTagSection({ id: "0", label: "genres", tags: arrayTags.map((x) => App.createTag(x)) })];
     return tagSections;
@@ -15712,6 +15713,22 @@ var _Sources = (() => {
     }
     return mangas;
   };
+  var parseBrowseCards = ($2) => {
+    const mangas = [];
+    for (const obj of $2("article.comic-card").toArray()) {
+      let image = $2("img", obj).first().attr("src") ?? $2("img", obj).first().attr("data-src") ?? "";
+      if (image.startsWith("/")) image = MCR_DOMAIN + image;
+      const title = $2("img", obj).first().attr("alt")?.trim() || $2(".comic-card__title", obj).text().trim();
+      const id = $2("a", obj).first().attr("href")?.replace(/\/$/, "")?.split("/").pop() ?? "";
+      if (!id || !title) continue;
+      mangas.push(App.createPartialSourceManga({
+        image,
+        title: decode(title),
+        mangaId: id
+      }));
+    }
+    return mangas;
+  };
   var isLastPage = ($2) => {
     let isLast = false;
     const pages = $2(".mg-pagination-table").first().remove().text().trim().split(" / ");
@@ -15724,7 +15741,7 @@ var _Sources = (() => {
   // src/McReader/McReader.ts
   var MCR_DOMAIN = "https://www.mgeko.cc";
   var McReaderInfo = {
-    version: "2.0.12",
+    version: "2.0.13",
     name: "McReader",
     icon: "icon.png",
     author: "Netsky",
@@ -15849,9 +15866,28 @@ var _Sources = (() => {
           method: "GET"
         });
       } else {
-        request = App.createRequest({
-          url: `${MCR_DOMAIN}/browse-comics?genre=${query?.includedTags?.map((x) => x.id)[0]}&results=${page}`,
+        const params = [`page=${page}`];
+        const included = query?.includedTags?.map((x) => x.id) ?? [];
+        const excluded = query?.excludedTags?.map((x) => x.id) ?? [];
+        if (included.length) params.push(`include_genres=${encodeURIComponent(included.join(","))}`);
+        if (excluded.length) params.push(`exclude_genres=${encodeURIComponent(excluded.join(","))}`);
+        const browseRequest = App.createRequest({
+          url: `${MCR_DOMAIN}/browse-comics/data/?${params.join("&")}`,
           method: "GET"
+        });
+        const browseResponse = await this.requestManager.schedule(browseRequest, 1);
+        this.CloudFlareError(browseResponse.status);
+        let data;
+        try {
+          data = typeof browseResponse.data === "string" ? JSON.parse(browseResponse.data) : browseResponse.data;
+        } catch (e) {
+          throw new Error(`Failed to parse browse response: ${e}`);
+        }
+        const results = parseBrowseCards(load(data?.results_html ?? ""));
+        const numPages = Number(data?.num_pages ?? 1);
+        return App.createPagedResults({
+          results,
+          metadata: page < numPages && results.length ? { page: page + 1 } : void 0
         });
       }
       const response = await this.requestManager.schedule(request, 1);

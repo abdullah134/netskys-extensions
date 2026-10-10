@@ -15532,10 +15532,18 @@ Images: ${images.length}`;
     })];
   };
   var parseChapterDetails = ($2, mangaId, chapterId) => {
+    const pages = parseImages($2);
+    if (pages.length == 0) {
+      // Paperback shows an empty chapter forever otherwise
+      if ($2("div.entry-content video, div.entry-content iframe").length) {
+        throw new Error("This post only contains a video, Paperback can't play videos.");
+      }
+      throw new Error(`No images found for post ${chapterId}, try again.`);
+    }
     const chapterDetails = App.createChapterDetails({
       id: chapterId,
       mangaId,
-      pages: parseImages($2)
+      pages
     });
     return chapterDetails;
   };
@@ -15567,6 +15575,14 @@ Images: ${images.length}`;
       if (!image) image = $2(img).attr("data-lazy");
       if (!image) continue;
       images.push(image);
+    }
+    // Some posts use plain WordPress images instead of the slider gallery
+    if (images.length == 0) {
+      for (const img of $2("img", "div.entry-content").toArray()) {
+        const image = getImageSrc($2(img));
+        if (!image || images.includes(image)) continue;
+        images.push(image);
+      }
     }
     return images;
   };
@@ -15616,7 +15632,7 @@ Images: ${images.length}`;
   // src/Mitaku/Mitaku.ts
   var MT_DOMAIN2 = "https://mitaku.net";
   var MitakuInfo = {
-    version: "1.0.4",
+    version: "1.0.5",
     name: "Mitaku",
     icon: "icon.png",
     author: "Netsky",
