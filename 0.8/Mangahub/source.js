@@ -1120,7 +1120,7 @@ var _Sources = (() => {
     return key;
   };
   var MangahubInfo = {
-    version: "3.3.3",
+    version: "3.4.0",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1162,7 +1162,10 @@ var _Sources = (() => {
       this.chapterCryptoKeys = {};
       this.chapterPagesCache = {};
       this.pendingChapters = {};
-      this.pendingKeyRefresh = null;
+      this.pendingActivation = null;
+      this.pendingActivationKey = "";
+      this.pendingRotation = null;
+      this.activatedKey = "";
       this.mangaCache = {};
       this.pendingManga = {};
       this.chapterCryptoExpiresAt = 0;
@@ -1310,41 +1313,12 @@ var _Sources = (() => {
       if (pages.length == 0) throw new Error(`No pages found for mangaId:${mangaId} chapterId:${chapterId}`);
       return pages;
     }
-    async getChapterCryptoKey(keyId, chapterPath, isRetry = false) {
-      if (this.chapterCryptoKeys[keyId] && Date.now() < this.chapterCryptoExpiresAt) {
-        return this.chapterCryptoKeys[keyId];
+    async getChapterCryptoKey(keyId, chapterPath) {
+      if (!this.chapterCryptoKeys[keyId] || Date.now() >= this.chapterCryptoExpiresAt) {
+        await this.activateKey(chapterPath, true);
       }
-      const request = App.createRequest({
-        url: MH_CHAPTER_CRYPTO_URL,
-        method: "GET",
-        headers: {
-          "Referer": `${MH_DOMAIN}${chapterPath}`,
-          "x-mhub-access": await this.getMhubAccess()
-        }
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      if (response.status >= 400) {
-        throw new Error(`MangaHub chapter key request failed (HTTP ${response.status})!\nTry doing the CloudFlare bypass again!`);
-      }
-      let data;
-      try {
-        data = JSON.parse(response.data);
-      } catch (e) {
-        throw new Error("MangaHub returned an invalid chapter key response!\nTry doing the CloudFlare bypass again!");
-      }
-      const keys = { ...data?.keys ?? {} };
-      if (data?.key) keys[data.keyId ?? keyId] = data.key;
-      this.chapterCryptoKeys = keys;
-      let expiresAt = typeof data?.expiresAt === "number" ? data.expiresAt : 0;
-      if (expiresAt > 0 && expiresAt < 1e12) expiresAt *= 1e3;
-      this.chapterCryptoExpiresAt = Math.min(expiresAt || Infinity, Date.now() + 3e5);
-      if (!keys[keyId]) {
-        // Key rotated between fetching the chapter and the key, try once more
-        this.chapterCryptoExpiresAt = 0;
-        if (!isRetry) return this.getChapterCryptoKey(keyId, chapterPath, true);
-        throw new Error(`MangaHub chapter decryption key not found for keyId: ${keyId}`);
-      }
-      return keys[keyId];
+      if (!this.chapterCryptoKeys[keyId]) throw new Error(`MangaHub chapter decryption key not found for keyId: ${keyId}`);
+      return this.chapterCryptoKeys[keyId];
     }
     async getSearchTags() {
       const tags = [];
@@ -1439,9 +1413,8 @@ var _Sources = (() => {
     // The website only sends x-mhub-access when loading chapter pages, sending it on every call
     // (e.g. library updates) burns through the key's rate limit
     async fetchGraphQL(request, refreshPath, needsKey = false) {
-      if (needsKey && !await this.getMhubAccess()) await this.refreshAPIKey(refreshPath, "");
       for (let attempt = 0; ; attempt++) {
-        const usedKey = needsKey ? await this.getMhubAccess() : "";
+        const usedKey = needsKey ? await this.activateKey(refreshPath) : "";
         request.headers = { ...request.headers ?? {} };
         if (needsKey) {
           request.headers["x-mhub-access"] = usedKey;
@@ -1457,64 +1430,79 @@ var _Sources = (() => {
         }
         if (!data?.errors?.length) return data;
         const errorText = data.errors.map((x) => x?.message ?? "").join(" ");
-        const isKeyError = MH_API_KEY_ERROR.test(errorText);
-        if (!isKeyError) throw new Error(`MangaHub API error: ${errorText || "unknown error"}`);
+        if (!MH_API_KEY_ERROR.test(errorText)) throw new Error(`MangaHub API error: ${errorText || "unknown error"}`);
         if (!needsKey || attempt >= 2) {
-          throw new Error(`API LIMIT EXCEEDED! (${errorText})\nOpen Mangahub's Cloudflare Bypass in the source settings, let mangahub.io fully load, close it and try again.`);
+          throw new Error(`API LIMIT EXCEEDED! (${errorText})\nTry again in a moment or do the CloudFlare bypass again.`);
         }
-        if (attempt == 0) {
-          await this.refreshAPIKey(refreshPath, usedKey);
-        } else {
-          await this.storeMhubKey(generateRandomMhubKey());
-        }
+        // Each key only allows ~10 chapters, a fresh key resets the limit
+        await this.rotateKey(refreshPath, usedKey);
       }
     }
-    // Only one refresh at a time, concurrent callers wait for it instead of invalidating each other's key
-    async refreshAPIKey(refreshPath, oldKey) {
-      if (oldKey !== void 0 && await this.getMhubAccess() !== oldKey) return;
-      if (!this.pendingKeyRefresh) {
-        this.pendingKeyRefresh = this.requestNewAPIKey(refreshPath, oldKey ?? await this.getMhubAccess()).finally(() => {
-          this.pendingKeyRefresh = null;
+    // The website calls /api/chapter-crypto with the key before loading chapters, chapter queries
+    // fail with "Chapter encryption unavailable" until it has. The response also holds the decryption keys.
+    async activateKey(chapterPath, force = false) {
+      let key = await this.getMhubAccess();
+      if (!key) {
+        key = generateRandomMhubKey();
+        await this.storeMhubKey(key);
+      }
+      if (!force && key === this.activatedKey && Date.now() < this.chapterCryptoExpiresAt) return key;
+      if (!this.pendingActivation || this.pendingActivationKey !== key) {
+        this.pendingActivationKey = key;
+        this.pendingActivation = this.requestChapterCrypto(key, chapterPath).finally(() => {
+          this.pendingActivation = null;
         });
       }
-      return this.pendingKeyRefresh;
+      return this.pendingActivation;
     }
-    async requestNewAPIKey(refreshPath, oldKey) {
-      const cookieStore = this.requestManager?.cookieStore;
-      const path = refreshPath ?? "/chapter/the-last-human/chapter-1";
-      for (const query of ["?reloadKey=1", ""]) {
-        const request = App.createRequest({
-          url: `${MH_DOMAIN}${path}${query}`,
-          method: "GET",
-          headers: {
-            "Referer": `${MH_DOMAIN}/`,
-            "User-Agent": await this.requestManager.getDefaultUserAgent()
-          }
-        });
-        let response;
-        try {
-          response = await this.requestManager.schedule(request, 1);
-        } catch (e) {
-          continue;
+    async requestChapterCrypto(key, chapterPath, isRetry = false) {
+      const request = App.createRequest({
+        url: MH_CHAPTER_CRYPTO_URL,
+        method: "GET",
+        headers: {
+          "Referer": `${MH_DOMAIN}${chapterPath ?? "/"}`,
+          "x-mhub-access": key
         }
-        let mhub_key = "";
-        for (const [key, value] of Object.entries(response.headers ?? {})) {
-          if (key.toLowerCase() !== "set-cookie") continue;
-          const match = /mhub_access=([^;,\s]+)/.exec(String(value));
-          if (match) mhub_key = match[1] ?? "";
-        }
-        if (!mhub_key) {
-          mhub_key = cookieStore?.getAllCookies().find((x) => x.name === "mhub_access")?.value ?? "";
-        }
-        if (mhub_key && mhub_key !== oldKey) {
-          await this.storeMhubKey(mhub_key);
-          return mhub_key;
-        }
+      });
+      const response = await this.requestManager.schedule(request, 1);
+      // 403: key used up, 409: header and mhub_access cookie don't match
+      if ((response.status == 403 || response.status == 409) && !isRetry) {
+        const newKey = generateRandomMhubKey();
+        await this.storeMhubKey(newKey);
+        return this.requestChapterCrypto(newKey, chapterPath, true);
       }
-      // The site didn't hand out a new key, MangaHub also accepts a random one
-      const randomKey = generateRandomMhubKey();
-      await this.storeMhubKey(randomKey);
-      return randomKey;
+      if (response.status >= 400) {
+        throw new Error(`MangaHub chapter key request failed (HTTP ${response.status})!\nTry doing the CloudFlare bypass again!`);
+      }
+      let data;
+      try {
+        data = JSON.parse(response.data);
+      } catch (e) {
+        throw new Error("MangaHub returned an invalid chapter key response!\nTry doing the CloudFlare bypass again!");
+      }
+      const keys = { ...data?.keys ?? {} };
+      if (data?.key && data?.keyId) keys[data.keyId] = data.key;
+      let expiresAt = typeof data?.expiresAt === "number" ? data.expiresAt : 0;
+      if (expiresAt > 0 && expiresAt < 1e12) expiresAt *= 1e3;
+      this.chapterCryptoKeys = keys;
+      this.chapterCryptoExpiresAt = Math.min(expiresAt || Infinity, Date.now() + 3e5);
+      this.activatedKey = key;
+      return key;
+    }
+    // Only one rotation at a time, concurrent chapter loads that hit the limit share the new key
+    async rotateKey(chapterPath, oldKey) {
+      if (await this.getMhubAccess() === oldKey) {
+        if (!this.pendingRotation) {
+          this.pendingRotation = (async () => {
+            await this.storeMhubKey(generateRandomMhubKey());
+            this.activatedKey = "";
+          })().finally(() => {
+            this.pendingRotation = null;
+          });
+        }
+        await this.pendingRotation;
+      }
+      return this.activateKey(chapterPath);
     }
     // The browser sends the key both as x-mhub-access and as the mhub_access cookie
     async storeMhubKey(key) {
