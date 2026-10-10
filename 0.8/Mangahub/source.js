@@ -1120,7 +1120,7 @@ var _Sources = (() => {
     return key;
   };
   var MangahubInfo = {
-    version: "3.4.0",
+    version: "3.4.2",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1262,7 +1262,7 @@ var _Sources = (() => {
       this.chapterPagesCache[cacheKey] = { pages, expiresAt: Date.now() + 6e5 };
       return App.createChapterDetails({ id: chapterId, mangaId, pages: pages.slice() });
     }
-    async loadChapterPages(mangaId, chapterId) {
+    async loadChapterPages(mangaId, chapterId, isRetry = false) {
       const request = App.createRequest({
         url: MH_API_DOMAIN,
         method: "POST",
@@ -1290,7 +1290,15 @@ var _Sources = (() => {
       let pagesString = data.data.chapter.pages;
       if (pagesString.startsWith("enc:")) {
         const envelope = parseEncryptedPages(pagesString);
-        pagesString = decryptChapterPages(envelope, await this.getChapterCryptoKey(envelope.keyId, chapterPath));
+        let cryptoKey;
+        try {
+          cryptoKey = await this.getChapterCryptoKey(envelope.keyId, chapterPath);
+        } catch (e) {
+          // The access key changed between fetching and decrypting, the pages are encrypted for the old one
+          if (isRetry) throw e;
+          return this.loadChapterPages(mangaId, chapterId, true);
+        }
+        pagesString = decryptChapterPages(envelope, cryptoKey);
       }
       const pages = [];
       try {
@@ -1415,12 +1423,9 @@ var _Sources = (() => {
     async fetchGraphQL(request, refreshPath, needsKey = false) {
       for (let attempt = 0; ; attempt++) {
         const usedKey = needsKey ? await this.activateKey(refreshPath) : "";
-        request.headers = { ...request.headers ?? {} };
-        if (needsKey) {
-          request.headers["x-mhub-access"] = usedKey;
-        } else {
-          delete request.headers["x-mhub-access"];
-        }
+        // Paperback's request.headers getter returns a copy, so always assign the whole object
+        const { "x-mhub-access": _oldKey, ...headers } = request.headers ?? {};
+        request.headers = needsKey ? { ...headers, "x-mhub-access": usedKey } : headers;
         const response = await this.requestManager.schedule(request, 1);
         let data;
         try {
