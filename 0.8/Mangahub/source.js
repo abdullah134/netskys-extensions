@@ -1080,12 +1080,128 @@ var _Sources = (() => {
     return searchResults;
   };
 
+  // src/Mangahub/MangahubCrypto.ts
+  // Pure JS AES-256-GCM decryption, the 0.8 runtime has no WebCrypto or TextDecoder.
+  var AES_SBOX = (() => {
+    const sbox = new Uint8Array(256);
+    let p = 1, q = 1;
+    do {
+      p = (p ^ p << 1 ^ (p & 128 ? 27 : 0)) & 255;
+      q ^= q << 1;
+      q ^= q << 2;
+      q ^= q << 4;
+      q &= 255;
+      if (q & 128) q ^= 9;
+      const x = q ^ (q << 1 | q >>> 7) ^ (q << 2 | q >>> 6) ^ (q << 3 | q >>> 5) ^ (q << 4 | q >>> 4);
+      sbox[p] = (x ^ 99) & 255;
+    } while (p != 1);
+    sbox[0] = 99;
+    return sbox;
+  })();
+  var aesXtime = (x) => (x << 1 ^ (x & 128 ? 27 : 0)) & 255;
+  var aesExpandKey = (key) => {
+    const nk = key.length / 4;
+    const rounds = nk + 6;
+    const w = new Uint8Array(16 * (rounds + 1));
+    w.set(key);
+    let rcon = 1;
+    for (let i = nk; i < 4 * (rounds + 1); i++) {
+      let t = w.slice((i - 1) * 4, i * 4);
+      if (i % nk == 0) {
+        t = new Uint8Array([AES_SBOX[t[1]] ^ rcon, AES_SBOX[t[2]], AES_SBOX[t[3]], AES_SBOX[t[0]]]);
+        rcon = aesXtime(rcon);
+      } else if (nk > 6 && i % nk == 4) {
+        t = t.map((b) => AES_SBOX[b]);
+      }
+      for (let j = 0; j < 4; j++) w[i * 4 + j] = w[(i - nk) * 4 + j] ^ t[j];
+    }
+    return { w, rounds };
+  };
+  var aesEncryptBlock = (expanded, input) => {
+    const { w, rounds } = expanded;
+    const s = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) s[i] = input[i] ^ w[i];
+    for (let round = 1; round <= rounds; round++) {
+      const t = new Uint8Array(16);
+      for (let c = 0; c < 4; c++) {
+        for (let r = 0; r < 4; r++) t[c * 4 + r] = AES_SBOX[s[(c + r) % 4 * 4 + r]];
+      }
+      if (round != rounds) {
+        for (let c = 0; c < 4; c++) {
+          const a0 = t[c * 4], a1 = t[c * 4 + 1], a2 = t[c * 4 + 2], a3 = t[c * 4 + 3];
+          const all = a0 ^ a1 ^ a2 ^ a3;
+          t[c * 4] ^= all ^ aesXtime(a0 ^ a1);
+          t[c * 4 + 1] ^= all ^ aesXtime(a1 ^ a2);
+          t[c * 4 + 2] ^= all ^ aesXtime(a2 ^ a3);
+          t[c * 4 + 3] ^= all ^ aesXtime(a3 ^ a0);
+        }
+      }
+      for (let i = 0; i < 16; i++) s[i] = t[i] ^ w[round * 16 + i];
+    }
+    return s;
+  };
+  var base64UrlToBytes = (value) => {
+    const input = String(value).replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "");
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const bytes = [];
+    let bits = 0, buffer = 0;
+    for (const character of input) {
+      const index = alphabet.indexOf(character);
+      if (index < 0) throw new Error("Invalid MangaHub chapter encryption data");
+      buffer = (buffer << 6 | index) & 16777215;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        bytes.push(buffer >>> bits & 255);
+      }
+    }
+    return new Uint8Array(bytes);
+  };
+  var utf8FromBytes = (bytes) => {
+    let encoded = "";
+    for (const byte of bytes) encoded += "%" + (byte < 16 ? "0" : "") + byte.toString(16);
+    return decodeURIComponent(encoded);
+  };
+  // Envelope: enc:v1:<keyId>:<iv>:<authTag>:<ciphertext>, all base64url
+  var parseEncryptedPages = (encoded) => {
+    const parts = encoded.split(":");
+    if (parts.length !== 6 || parts[0] !== "enc" || parts[1] !== "v1") {
+      throw new Error("Unsupported MangaHub chapter encryption format");
+    }
+    return { keyId: parts[2], iv: parts[3], authTag: parts[4], ciphertext: parts[5] };
+  };
+  var decryptChapterPages = (envelope, keyData) => {
+    const key = base64UrlToBytes(keyData);
+    const iv = base64UrlToBytes(envelope.iv);
+    const ciphertext = base64UrlToBytes(envelope.ciphertext);
+    if (key.length !== 32 || iv.length !== 12) throw new Error("Invalid MangaHub chapter encryption data");
+    const expanded = aesExpandKey(key);
+    // GCM with a 96 bit IV: J0 = IV || 1, payload is CTR mode starting at J0 + 1
+    const counter = new Uint8Array(16);
+    counter.set(iv);
+    let count = 2;
+    const output = new Uint8Array(ciphertext.length);
+    for (let offset = 0; offset < ciphertext.length; offset += 16) {
+      counter[12] = count >>> 24 & 255;
+      counter[13] = count >>> 16 & 255;
+      counter[14] = count >>> 8 & 255;
+      counter[15] = count & 255;
+      const keystream = aesEncryptBlock(expanded, counter);
+      for (let i = 0; i < 16 && offset + i < ciphertext.length; i++) {
+        output[offset + i] = ciphertext[offset + i] ^ keystream[i];
+      }
+      count++;
+    }
+    return utf8FromBytes(output);
+  };
+
   // src/Mangahub/Mangahub.ts
   var MH_DOMAIN = "https://mangahub.io";
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
+  var MH_CHAPTER_CRYPTO_URL = `${MH_DOMAIN}/api/chapter-crypto`;
   var MangahubInfo = {
-    version: "3.1.1",
+    version: "3.2.0",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1108,14 +1224,16 @@ var _Sources = (() => {
         requestTimeout: 15e3,
         interceptor: {
           interceptRequest: async (request) => {
-            const mhubAccess = await this.getMhubAccess();
+            const isApiRequest = request.url.startsWith(MH_API_DOMAIN);
+            const mhubAccess = isApiRequest ? await this.getMhubAccess() : "";
             request.headers = {
               ...request.headers ?? {},
               ...{
                 "Referer": `${MH_DOMAIN}/`,
-                "Origin": `${MH_DOMAIN}`,
                 "User-Agent": await this.requestManager.getDefaultUserAgent()
               },
+              ...request.url.startsWith(MH_CHAPTER_CRYPTO_URL) ? { "Accept": "application/json" } : {},
+              ...isApiRequest ? { "Origin": `${MH_DOMAIN}` } : {},
               ...mhubAccess ? { "x-mhub-access": mhubAccess } : {}
             };
             return request;
@@ -1126,6 +1244,8 @@ var _Sources = (() => {
         }
       });
       this.stateManager = App.createSourceStateManager();
+      this.chapterCryptoKeys = {};
+      this.chapterCryptoExpiresAt = 0;
       this.getMhubAccess = async () => {
         const stored = await this.stateManager.retrieve("mhub_key") ?? "";
         const match = /mhub_access=([^;]*)/.exec(stored);
@@ -1238,20 +1358,67 @@ var _Sources = (() => {
         throw new Error("API LIMIT EXCEEDED!\nTry doing the CloudFlare bypass again or come back later!");
       }
       if (!data.data?.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
+      let pagesString = data.data.chapter.pages;
+      if (pagesString.startsWith("enc:")) {
+        const envelope = parseEncryptedPages(pagesString);
+        pagesString = decryptChapterPages(envelope, await this.getChapterCryptoKey(envelope.keyId));
+      }
       const pages = [];
       try {
-        const parsedPages = JSON.parse(data.data.chapter.pages);
-        for (const img of parsedPages.i) {
-          pages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+        const parsedPages = JSON.parse(pagesString);
+        let paths = [];
+        if (Array.isArray(parsedPages)) {
+          paths = parsedPages;
+        } else if (Array.isArray(parsedPages?.i)) {
+          paths = parsedPages.i.map((img) => `${parsedPages.p ?? ""}${img}`);
+        } else if (parsedPages && typeof parsedPages === "object") {
+          paths = Object.values(parsedPages);
+        }
+        for (const path of paths) {
+          if (typeof path !== "string" || !path) continue;
+          pages.push(/^https?:\/\//.test(path) ? path : `${MH_CDN_DOMAIN}/${path.replace(/^\//, "")}`);
         }
       } catch (e) {
         throw new Error(`${e}`);
       }
+      if (pages.length == 0) throw new Error(`No pages found for mangaId:${mangaId} chapterId:${chapterId}`);
       return App.createChapterDetails({
         id: chapterId,
         mangaId,
         pages
       });
+    }
+    async getChapterCryptoKey(keyId, isRetry = false) {
+      if (this.chapterCryptoKeys[keyId] && Date.now() < this.chapterCryptoExpiresAt) {
+        return this.chapterCryptoKeys[keyId];
+      }
+      const request = App.createRequest({
+        url: MH_CHAPTER_CRYPTO_URL,
+        method: "GET"
+      });
+      const response = await this.requestManager.schedule(request, 1);
+      if (response.status >= 400) {
+        throw new Error(`MangaHub chapter key request failed (HTTP ${response.status})!\nTry doing the CloudFlare bypass again!`);
+      }
+      let data;
+      try {
+        data = JSON.parse(response.data);
+      } catch (e) {
+        throw new Error("MangaHub returned an invalid chapter key response!\nTry doing the CloudFlare bypass again!");
+      }
+      const keys = { ...data?.keys ?? {} };
+      if (data?.key) keys[data.keyId ?? keyId] = data.key;
+      this.chapterCryptoKeys = keys;
+      let expiresAt = typeof data?.expiresAt === "number" ? data.expiresAt : 0;
+      if (expiresAt > 0 && expiresAt < 1e12) expiresAt *= 1e3;
+      this.chapterCryptoExpiresAt = Math.min(expiresAt || Infinity, Date.now() + 3e5);
+      if (!keys[keyId]) {
+        // Key rotated between fetching the chapter and the key, try once more
+        this.chapterCryptoExpiresAt = 0;
+        if (!isRetry) return this.getChapterCryptoKey(keyId, true);
+        throw new Error(`MangaHub chapter decryption key not found for keyId: ${keyId}`);
+      }
+      return keys[keyId];
     }
     async getSearchTags() {
       const request = App.createRequest({
