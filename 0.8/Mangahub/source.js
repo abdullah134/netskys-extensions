@@ -1085,7 +1085,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.1.0",
+    version: "3.1.1",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1108,14 +1108,15 @@ var _Sources = (() => {
         requestTimeout: 15e3,
         interceptor: {
           interceptRequest: async (request) => {
+            const mhubAccess = await this.getMhubAccess();
             request.headers = {
               ...request.headers ?? {},
               ...{
                 "Referer": `${MH_DOMAIN}/`,
                 "Origin": `${MH_DOMAIN}`,
-                "User-Agent": await this.requestManager.getDefaultUserAgent(),
-                "x-mhub-access": await this.getMhubAccess()
-              }
+                "User-Agent": await this.requestManager.getDefaultUserAgent()
+              },
+              ...mhubAccess ? { "x-mhub-access": mhubAccess } : {}
             };
             return request;
           },
@@ -1126,7 +1127,9 @@ var _Sources = (() => {
       });
       this.stateManager = App.createSourceStateManager();
       this.getMhubAccess = async () => {
-        return await this.stateManager.retrieve("mhub_key");
+        const stored = await this.stateManager.retrieve("mhub_key") ?? "";
+        const match = /mhub_access=([^;]*)/.exec(stored);
+        return match ? match[1] : stored;
       };
     }
     getMangaShareUrl(mangaId) {
@@ -1200,7 +1203,10 @@ var _Sources = (() => {
       if (data.data.manga.chapters?.length == 0) throw new Error(`Failed to parse chapters property from manga object mangaId:${mangaId}`);
       return parseChapters(data.data.manga.chapters, mangaId);
     }
-    async getChapterDetails(mangaId, chapterId) {
+    async getChapterDetails(mangaId, chapterId, isRetry = false) {
+      if (!await this.getMhubAccess()) {
+        await this.refreshAPIKey();
+      }
       const request = App.createRequest({
         url: MH_API_DOMAIN,
         method: "POST",
@@ -1226,9 +1232,10 @@ var _Sources = (() => {
       } catch (e) {
         console.log(`${e}`);
       }
-      if (data?.errors) {
+      if (!data || data.errors) {
         await this.refreshAPIKey();
-        throw new Error("API LIMIT EXCEEDED!\nTry doing to CloudFlare again bypass or come back later!");
+        if (!isRetry) return this.getChapterDetails(mangaId, chapterId, true);
+        throw new Error("API LIMIT EXCEEDED!\nTry doing the CloudFlare bypass again or come back later!");
       }
       if (!data.data?.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
       const pages = [];
@@ -1406,7 +1413,7 @@ var _Sources = (() => {
     }
     async getSearchResults(query, metadata) {
       const offset = metadata?.offset ?? 0;
-      const searchTag = query?.includedTags?.map((x) => x.id);
+      const searchTag = query?.includedTags?.map((x) => x.id) ?? [];
       const requests = [
         //No Alt Titles
         {
@@ -1419,7 +1426,7 @@ var _Sources = (() => {
             },
             data: {
               query: `query {
-                            search(x: m01, alt: false, q: "${query?.title ? query.title : ""}", genre: "${searchTag[0] ? searchTag[0] : ""}", offset:${offset}) {
+                            search(x: m01, alt: false, q: ${JSON.stringify(query?.title ?? "")}, genre: ${JSON.stringify(searchTag[0] ?? "")}, offset:${offset}) {
                               rows {
                                 id
                                 title
@@ -1444,7 +1451,7 @@ var _Sources = (() => {
             },
             data: {
               query: `query {
-                            search(x: m01, alt: true, q: "${query?.title ? query.title : ""}", genre: "${searchTag[0] ? searchTag[0] : ""}", offset:${offset}) {
+                            search(x: m01, alt: true, q: ${JSON.stringify(query?.title ?? "")}, genre: ${JSON.stringify(searchTag[0] ?? "")}, offset:${offset}) {
                               rows {
                                 id
                                 title
@@ -1487,7 +1494,7 @@ var _Sources = (() => {
       });
     }
     async getCloudflareBypassRequestAsync() {
-      await this.stateManager.store("userAgent", "null");
+      await this.stateManager.store("mhub_key", "");
       return App.createRequest({
         url: `${MH_DOMAIN}/chapter/the-last-human/chapter-1?reloadKey=1`,
         method: "GET",
@@ -1498,32 +1505,31 @@ var _Sources = (() => {
       });
     }
     async refreshAPIKey() {
-      await this.stateManager.store("mhub_key", "mhub_access=; Max-Age=0; Path=/");
-      this.requestManager?.cookieStore?.getAllCookies().forEach((x) => {
-        this.requestManager?.cookieStore?.removeCookie(x);
+      await this.stateManager.store("mhub_key", "");
+      const cookieStore = this.requestManager?.cookieStore;
+      cookieStore?.getAllCookies().filter((x) => x.name === "mhub_access").forEach((x) => {
+        cookieStore.removeCookie(x);
       });
       const request = App.createRequest({
         url: `${MH_DOMAIN}/chapter/the-last-human/chapter-1?reloadKey=1`,
         method: "GET",
         headers: {
           "Referer": `${MH_DOMAIN}/`,
-          "User-Agent": await this.requestManager.getDefaultUserAgent(),
-          "Cookie": await this.stateManager.retrieve("mhub_key")
+          "User-Agent": await this.requestManager.getDefaultUserAgent()
         }
       });
       const response = await this.requestManager.schedule(request, 1);
-      const cookieHeaders = response.headers["Set-Cookie"];
       let mhub_key = "";
-      if (cookieHeaders) {
-        const match = /mhub_access=([^;]+)/.exec(cookieHeaders);
-        if (match) {
-          const mhubAccess = match[1] ?? "";
-          mhub_key = mhubAccess;
-        }
+      for (const [key, value] of Object.entries(response.headers ?? {})) {
+        if (key.toLowerCase() !== "set-cookie") continue;
+        const match = /mhub_access=([^;,\s]+)/.exec(String(value));
+        if (match) mhub_key = match[1] ?? "";
       }
-      const now = Date.now();
-      const expires = now + 2 * 60 * 60 * 24 * 31;
-      await this.stateManager.store("mhub_key", `mhub_access=${mhub_key}; Max-Age=${expires}; Path=/`);
+      if (!mhub_key) {
+        mhub_key = cookieStore?.getAllCookies().find((x) => x.name === "mhub_access")?.value ?? "";
+      }
+      await this.stateManager.store("mhub_key", mhub_key);
+      return mhub_key;
     }
   };
   return __toCommonJS(Mangahub_exports);
