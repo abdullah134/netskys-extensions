@@ -1120,7 +1120,7 @@ var _Sources = (() => {
     return key;
   };
   var MangahubInfo = {
-    version: "3.3.0",
+    version: "3.3.2",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1266,7 +1266,9 @@ var _Sources = (() => {
         },
         data: {
           query: `query {
-                    chapter(x: m01, slug: "${mangaId}", number: ${Number(chapterId)}) {
+                    chapter(x: m01, slug: ${JSON.stringify(mangaId)}, number: ${Number(chapterId)}) {
+                      mangaID
+                      number
                       pages
                       title
                       slug
@@ -1278,6 +1280,7 @@ var _Sources = (() => {
       const chapterPath = `/chapter/${mangaId}/chapter-${chapterId}`;
       const data = await this.fetchGraphQL(request, chapterPath, true);
       if (!data.data?.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
+      this.markRecentlyRead(data.data.chapter.mangaID, data.data.chapter.number);
       let pagesString = data.data.chapter.pages;
       if (pagesString.startsWith("enc:")) {
         const envelope = parseEncryptedPages(pagesString);
@@ -1343,33 +1346,31 @@ var _Sources = (() => {
     async getSearchTags() {
       const tags = [];
       const seen = {};
+      const addTag = (id, label) => {
+        if (!id || !label || seen[id]) return;
+        seen[id] = true;
+        tags.push({ id, label: decode(label) });
+      };
+      // Same query the website uses for its genre list
       try {
-        const request = App.createRequest({ url: `${MH_DOMAIN}/search`, method: "GET" });
-        const response = await this.requestManager.schedule(request, 1);
-        const regex = /<a\b[^>]*class="[^"]*\bgenre-label\b[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
-        let match;
-        while ((match = regex.exec(response.data ?? "")) !== null) {
-          const href = /href="([^"]*)"/i.exec(match[0])?.[1] ?? "";
-          const id = href.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop();
-          const label = decode(match[1].replace(/<[^>]*>/g, "").trim());
-          if (!id || !label || seen[id]) continue;
-          seen[id] = true;
-          tags.push({ id, label });
-        }
-      } catch (e) {
-        console.log(`Failed to load genres from search page: ${e}`);
-      }
-      if (tags.length == 0) {
         const data = await this.fetchGraphQL(this.graphqlRequest(`query {
                     genres {
                       slug
                       title
                     }
                 }`));
-        for (const genre of data.data?.genres ?? []) {
-          if (!genre?.slug || !genre?.title || seen[genre.slug]) continue;
-          seen[genre.slug] = true;
-          tags.push({ id: genre.slug, label: genre.title });
+        for (const genre of data.data?.genres ?? []) addTag(genre?.slug, genre?.title);
+      } catch (e) {
+        console.log(`Failed to load genres from API: ${e}`);
+      }
+      if (tags.length == 0) {
+        const request = App.createRequest({ url: `${MH_DOMAIN}/search`, method: "GET" });
+        const response = await this.requestManager.schedule(request, 1);
+        const regex = /<a\b[^>]*class="[^"]*\bgenre-label\b[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+        let match;
+        while ((match = regex.exec(response.data ?? "")) !== null) {
+          const href = /href="([^"]*)"/i.exec(match[0])?.[1] ?? "";
+          addTag(href.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop(), match[1].replace(/<[^>]*>/g, "").trim());
         }
       }
       if (tags.length == 0) throw new Error("Failed to load MangaHub genres!");
@@ -1397,10 +1398,26 @@ var _Sources = (() => {
     async getSearchResults(query, metadata) {
       const offset = metadata?.offset ?? 0;
       const genres = (query?.includedTags ?? []).map((x) => x.id).filter((x) => x);
-      const data = await this.fetchGraphQL(this.graphqlRequest(`query {
-                ${this.searchQuery("POPULAR", offset, query?.title ?? "", genres.length ? genres.join(",") : "all")}
+      const title = (query?.title ?? "").trim();
+      let rows;
+      if (!title && genres.length == 1) {
+        // Browsing a single category, the website uses genreManga for this
+        const data = await this.fetchGraphQL(this.graphqlRequest(`query {
+                genreManga(x: m01, genre: ${JSON.stringify(genres[0])}, mod: LATEST, offset: ${offset}) {
+                  rows {
+                    title
+                    slug
+                    image
+                  }
+                }
             }`));
-      const rows = data.data?.search?.rows ?? [];
+        rows = data.data?.genreManga?.rows ?? [];
+      } else {
+        const data = await this.fetchGraphQL(this.graphqlRequest(`query {
+                ${this.searchQuery("POPULAR", offset, title, genres.length ? genres.join(",") : "all")}
+            }`));
+        rows = data.data?.search?.rows ?? [];
+      }
       return App.createPagedResults({
         results: parseMangaList(rows),
         metadata: rows.length >= MH_PAGE_SIZE ? { offset: offset + MH_PAGE_SIZE } : void 0
@@ -1441,12 +1458,12 @@ var _Sources = (() => {
         const isKeyError = MH_API_KEY_ERROR.test(errorText);
         if (!isKeyError) throw new Error(`MangaHub API error: ${errorText || "unknown error"}`);
         if (!needsKey || attempt >= 2) {
-          throw new Error("API LIMIT EXCEEDED!\nWait a minute and try again, or do the CloudFlare bypass again!");
+          throw new Error(`API LIMIT EXCEEDED! (${errorText})\nWait a minute and try again, or do the CloudFlare bypass again!`);
         }
         if (attempt == 0) {
           await this.refreshAPIKey(refreshPath, usedKey);
         } else {
-          await this.stateManager.store("mhub_key", generateRandomMhubKey());
+          await this.storeMhubKey(generateRandomMhubKey());
         }
       }
     }
@@ -1464,9 +1481,6 @@ var _Sources = (() => {
       const cookieStore = this.requestManager?.cookieStore;
       const path = refreshPath ?? "/chapter/the-last-human/chapter-1";
       for (const query of ["?reloadKey=1", ""]) {
-        cookieStore?.getAllCookies().filter((x) => x.name === "mhub_access").forEach((x) => {
-          cookieStore.removeCookie(x);
-        });
         const request = App.createRequest({
           url: `${MH_DOMAIN}${path}${query}`,
           method: "GET",
@@ -1491,14 +1505,49 @@ var _Sources = (() => {
           mhub_key = cookieStore?.getAllCookies().find((x) => x.name === "mhub_access")?.value ?? "";
         }
         if (mhub_key && mhub_key !== oldKey) {
-          await this.stateManager.store("mhub_key", mhub_key);
+          await this.storeMhubKey(mhub_key);
           return mhub_key;
         }
       }
       // The site didn't hand out a new key, MangaHub also accepts a random one
       const randomKey = generateRandomMhubKey();
-      await this.stateManager.store("mhub_key", randomKey);
+      await this.storeMhubKey(randomKey);
       return randomKey;
+    }
+    // The browser sends the key both as x-mhub-access and as the mhub_access cookie
+    async storeMhubKey(key) {
+      await this.stateManager.store("mhub_key", key);
+      const cookieStore = this.requestManager?.cookieStore;
+      if (!cookieStore?.addCookie) return;
+      try {
+        cookieStore.getAllCookies().filter((x) => x.name === "mhub_access").forEach((x) => cookieStore.removeCookie(x));
+        cookieStore.addCookie(App.createCookie({
+          name: "mhub_access",
+          value: key,
+          domain: "mangahub.io",
+          path: "/",
+          expires: new Date(Date.now() + 2 * 864e5)
+        }));
+      } catch (e) {
+        console.log(`Failed to set mhub_access cookie: ${e}`);
+      }
+    }
+    // Mimics the browser's "recently" cookie, MangaHub uses it when handing out new keys
+    markRecentlyRead(mangaID, number) {
+      const cookieStore = this.requestManager?.cookieStore;
+      if (mangaID == null || number == null || !cookieStore?.addCookie) return;
+      try {
+        cookieStore.getAllCookies().filter((x) => x.name === "recently").forEach((x) => cookieStore.removeCookie(x));
+        cookieStore.addCookie(App.createCookie({
+          name: "recently",
+          value: encodeURIComponent(JSON.stringify({ [Date.now()]: { mangaID, number } })),
+          domain: "mangahub.io",
+          path: "/",
+          expires: new Date(Date.now() + 60 * 864e5)
+        }));
+      } catch (e) {
+        console.log(`Failed to set recently cookie: ${e}`);
+      }
     }
   };
   return __toCommonJS(Mangahub_exports);
