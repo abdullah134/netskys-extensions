@@ -1120,7 +1120,7 @@ var _Sources = (() => {
     return key;
   };
   var MangahubInfo = {
-    version: "3.3.2",
+    version: "3.3.3",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1167,6 +1167,9 @@ var _Sources = (() => {
       this.pendingManga = {};
       this.chapterCryptoExpiresAt = 0;
       this.getMhubAccess = async () => {
+        // Prefer the cookie, the Cloudflare bypass webview runs the real site which sets a fresh, working key there
+        const cookie = this.requestManager?.cookieStore?.getAllCookies().find((x) => x.name === "mhub_access" && x.value);
+        if (cookie) return cookie.value;
         const stored = await this.stateManager.retrieve("mhub_key") ?? "";
         const match = /mhub_access=([^;]*)/.exec(stored);
         return match ? match[1] : stored;
@@ -1424,7 +1427,6 @@ var _Sources = (() => {
       });
     }
     async getCloudflareBypassRequestAsync() {
-      await this.stateManager.store("mhub_key", "");
       return App.createRequest({
         url: `${MH_DOMAIN}/chapter/the-last-human/chapter-1?reloadKey=1`,
         method: "GET",
@@ -1458,7 +1460,7 @@ var _Sources = (() => {
         const isKeyError = MH_API_KEY_ERROR.test(errorText);
         if (!isKeyError) throw new Error(`MangaHub API error: ${errorText || "unknown error"}`);
         if (!needsKey || attempt >= 2) {
-          throw new Error(`API LIMIT EXCEEDED! (${errorText})\nWait a minute and try again, or do the CloudFlare bypass again!`);
+          throw new Error(`API LIMIT EXCEEDED! (${errorText})\nOpen Mangahub's Cloudflare Bypass in the source settings, let mangahub.io fully load, close it and try again.`);
         }
         if (attempt == 0) {
           await this.refreshAPIKey(refreshPath, usedKey);
