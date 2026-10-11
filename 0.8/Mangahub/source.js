@@ -964,19 +964,22 @@ var _Sources = (() => {
     { id: "completed_manga", title: "Completed Manga", mod: "COMPLETED", type: import_types.HomeSectionType.singleRowNormal }
   ];
   var MH_PAGE_SIZE = 30;
-  var parseMangaList = (rows) => {
-    const collectedIds = [];
+  // The same series can be listed under several slugs that share one manga id,
+  // the website only shows the first one, so dedupe by id (across pages via `seen`)
+  var parseMangaList = (rows, seen = []) => {
+    const collectedIds = seen;
     const results = [];
     for (const manga of rows ?? []) {
       const title = manga?.title ?? "";
       const id = manga?.slug ?? "";
-      if (!id || !title || collectedIds.includes(id)) continue;
+      const seriesId = String(manga?.id ?? id);
+      if (!id || !title || collectedIds.includes(seriesId)) continue;
       results.push(App.createPartialSourceManga({
         image: manga.image ? `${MH_CDN_THUMBS_DOMAIN}/${manga.image}` : "",
         title: decode(title),
         mangaId: id
       }));
-      collectedIds.push(id);
+      collectedIds.push(seriesId);
     }
     return results;
   };
@@ -1120,7 +1123,7 @@ var _Sources = (() => {
     return key;
   };
   var MangahubInfo = {
-    version: "3.4.2",
+    version: "3.4.3",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1195,6 +1198,7 @@ var _Sources = (() => {
     searchQuery(mod, offset, title = "", genre = "all", alias = "search") {
       return `${alias}: search(x: m01, q: ${JSON.stringify(title)}, genre: ${JSON.stringify(genre)}, mod: ${mod}, offset: ${offset}) {
                   rows {
+                    id
                     title
                     slug
                     image
@@ -1375,9 +1379,10 @@ var _Sources = (() => {
                 ${this.searchQuery(section.mod, offset)}
             }`));
       const rows = data.data?.search?.rows ?? [];
+      const seen = metadata?.seen ?? [];
       return App.createPagedResults({
-        results: parseMangaList(rows),
-        metadata: rows.length >= MH_PAGE_SIZE ? { offset: offset + MH_PAGE_SIZE } : void 0
+        results: parseMangaList(rows, seen),
+        metadata: rows.length >= MH_PAGE_SIZE ? { offset: offset + MH_PAGE_SIZE, seen } : void 0
       });
     }
     async getSearchResults(query, metadata) {
@@ -1390,6 +1395,7 @@ var _Sources = (() => {
         const data = await this.fetchGraphQL(this.graphqlRequest(`query {
                 genreManga(x: m01, genre: ${JSON.stringify(genres[0])}, mod: LATEST, offset: ${offset}) {
                   rows {
+                    id
                     title
                     slug
                     image
@@ -1403,9 +1409,10 @@ var _Sources = (() => {
             }`));
         rows = data.data?.search?.rows ?? [];
       }
+      const seen = metadata?.seen ?? [];
       return App.createPagedResults({
-        results: parseMangaList(rows),
-        metadata: rows.length >= MH_PAGE_SIZE ? { offset: offset + MH_PAGE_SIZE } : void 0
+        results: parseMangaList(rows, seen),
+        metadata: rows.length >= MH_PAGE_SIZE ? { offset: offset + MH_PAGE_SIZE, seen } : void 0
       });
     }
     async getCloudflareBypassRequestAsync() {

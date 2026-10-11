@@ -15535,7 +15535,7 @@ Images: ${images.length}`;
     const pages = parseImages($2);
     if (pages.length == 0) {
       // Paperback shows an empty chapter forever otherwise
-      if ($2("div.entry-content video, div.entry-content iframe").length) {
+      if ($2("div.entry-content iframe, video, source[type^='video'], a[href*='/category/online-video']").length) {
         throw new Error("This post only contains a video, Paperback can't play videos.");
       }
       throw new Error(`No images found for post ${chapterId}, try again.`);
@@ -15632,7 +15632,7 @@ Images: ${images.length}`;
   // src/Mitaku/Mitaku.ts
   var MT_DOMAIN2 = "https://mitaku.net";
   var MitakuInfo = {
-    version: "1.0.5",
+    version: "1.0.6",
     name: "Mitaku",
     icon: "icon.png",
     author: "Netsky",
