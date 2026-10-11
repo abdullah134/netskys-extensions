@@ -977,7 +977,8 @@ var _Sources = (() => {
       results.push(App.createPartialSourceManga({
         image: manga.image ? `${MH_CDN_THUMBS_DOMAIN}/${manga.image}` : "",
         title: decode(title),
-        mangaId: id
+        mangaId: id,
+        subtitle: manga.latestChapter != null ? `Chapter ${manga.latestChapter}` : void 0
       }));
       collectedIds.push(seriesId);
     }
@@ -1123,7 +1124,7 @@ var _Sources = (() => {
     return key;
   };
   var MangahubInfo = {
-    version: "3.4.3",
+    version: "3.4.4",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1202,6 +1203,7 @@ var _Sources = (() => {
                     title
                     slug
                     image
+                    latestChapter
                   }
                 }`;
     }
@@ -1399,6 +1401,7 @@ var _Sources = (() => {
                     title
                     slug
                     image
+                    latestChapter
                   }
                 }
             }`));
