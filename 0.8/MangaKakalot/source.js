@@ -15618,7 +15618,7 @@ var _Sources = (() => {
     { id: "completed", title: "Completed", filter: 5, type: import_types3.HomeSectionType.singleRowNormal }
   ];
   var MangaKakalotInfo = {
-    version: "1.0.0",
+    version: "1.0.1",
     name: "MangaKakalot",
     icon: "icon.png",
     author: "abdullah134",
@@ -15740,9 +15740,11 @@ var _Sources = (() => {
         metadata: count >= pageSize ? { page: page + 1, seen } : void 0
       });
     }
+    // The homepage isn't behind Cloudflare's check, so opening it would never give the bypass a
+    // clearance cookie. Use a page that is protected so the challenge shows up and gets solved.
     async getCloudflareBypassRequestAsync() {
       return App.createRequest({
-        url: MK_DOMAIN,
+        url: `${MK_DOMAIN}/genre/all?filter=4&page=1`,
         method: "GET",
         headers: {
           "Referer": `${MK_DOMAIN}/`,
@@ -15753,7 +15755,7 @@ var _Sources = (() => {
     checkCloudflare(status) {
       if (status == 503 || status == 403) {
         throw new Error(`CLOUDFLARE BYPASS ERROR:
-Please go to the homepage of <${MK_DOMAIN}> and press the cloud icon.`);
+Open MangaKakalot's source settings, tap the cloud icon (Cloudflare Bypass) and complete the check.`);
       }
     }
   };
