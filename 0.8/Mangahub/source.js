@@ -1118,13 +1118,17 @@ var _Sources = (() => {
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MH_CHAPTER_CRYPTO_URL = `${MH_DOMAIN}/api/chapter-crypto`;
   var MH_API_KEY_ERROR = /rate\s*limit|api\s*key|encryption/i;
+  // MangaHub allows ~10 chapter requests per access key, stay a little under it
+  var MH_KEY_CHAPTER_LIMIT = 8;
+  // Downloads ask for many chapters at once, load a few at a time instead
+  var MH_MAX_CHAPTER_LOADS = 3;
   var generateRandomMhubKey = () => {
     let key = "";
     for (let i = 0; i < 32; i++) key += Math.floor(Math.random() * 16).toString(16);
     return key;
   };
   var MangahubInfo = {
-    version: "3.4.4",
+    version: "3.5.0",
     name: "Mangahub",
     icon: "icon.png",
     author: "Netsky",
@@ -1170,6 +1174,9 @@ var _Sources = (() => {
       this.pendingActivationKey = "";
       this.pendingRotation = null;
       this.activatedKey = "";
+      this.keyUses = {};
+      this.activeChapterLoads = 0;
+      this.chapterSlotWaiters = [];
       this.mangaCache = {};
       this.pendingManga = {};
       this.chapterCryptoExpiresAt = 0;
@@ -1258,7 +1265,7 @@ var _Sources = (() => {
       }
       // Paperback often asks for the same chapter several times in a row, share one request
       if (!this.pendingChapters[cacheKey]) {
-        this.pendingChapters[cacheKey] = this.loadChapterPages(mangaId, chapterId).finally(() => {
+        this.pendingChapters[cacheKey] = this.withChapterSlot(() => this.loadChapterPages(mangaId, chapterId)).finally(() => {
           delete this.pendingChapters[cacheKey];
         });
       }
@@ -1267,6 +1274,18 @@ var _Sources = (() => {
       if (keys.length >= 20) delete this.chapterPagesCache[keys[0]];
       this.chapterPagesCache[cacheKey] = { pages, expiresAt: Date.now() + 6e5 };
       return App.createChapterDetails({ id: chapterId, mangaId, pages: pages.slice() });
+    }
+    async withChapterSlot(load) {
+      while (this.activeChapterLoads >= MH_MAX_CHAPTER_LOADS) {
+        await new Promise((resolve) => this.chapterSlotWaiters.push(resolve));
+      }
+      this.activeChapterLoads++;
+      try {
+        return await load();
+      } finally {
+        this.activeChapterLoads--;
+        this.chapterSlotWaiters.shift()?.();
+      }
     }
     async loadChapterPages(mangaId, chapterId, isRetry = false) {
       const request = App.createRequest({
@@ -1431,8 +1450,17 @@ var _Sources = (() => {
     // The website only sends x-mhub-access when loading chapter pages, sending it on every call
     // (e.g. library updates) burns through the key's rate limit
     async fetchGraphQL(request, refreshPath, needsKey = false) {
-      for (let attempt = 0; ; attempt++) {
+      for (let attempt = 0; ; ) {
         const usedKey = needsKey ? await this.activateKey(refreshPath) : "";
+        if (needsKey) {
+          // Switch keys before MangaHub's per-key limit is reached, checked and reserved without awaiting
+          // in between so concurrent chapter loads (downloads) don't overshoot it
+          if ((this.keyUses[usedKey] ?? 0) >= MH_KEY_CHAPTER_LIMIT) {
+            await this.rotateKey(refreshPath, usedKey);
+            continue;
+          }
+          this.keyUses[usedKey] = (this.keyUses[usedKey] ?? 0) + 1;
+        }
         // Paperback's request.headers getter returns a copy, so always assign the whole object
         const { "x-mhub-access": _oldKey, ...headers } = request.headers ?? {};
         request.headers = needsKey ? { ...headers, "x-mhub-access": usedKey } : headers;
@@ -1446,10 +1474,11 @@ var _Sources = (() => {
         if (!data?.errors?.length) return data;
         const errorText = data.errors.map((x) => x?.message ?? "").join(" ");
         if (!MH_API_KEY_ERROR.test(errorText)) throw new Error(`MangaHub API error: ${errorText || "unknown error"}`);
-        if (!needsKey || attempt >= 2) {
+        if (!needsKey || ++attempt > 4) {
           throw new Error(`API LIMIT EXCEEDED! (${errorText})\nTry again in a moment or do the CloudFlare bypass again.`);
         }
         // Each key only allows ~10 chapters, a fresh key resets the limit
+        this.keyUses[usedKey] = Infinity;
         await this.rotateKey(refreshPath, usedKey);
       }
     }
